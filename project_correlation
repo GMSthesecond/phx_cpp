@@ -1,0 +1,36 @@
+// I will enter potential tasks.
+// each potential task is comprised of either one or two components
+// components are concepts that affect the types of data we'll need to make the project work
+// there are eighteen components to choose from
+// no potential task has two of the same component
+// I will also add completed tasks, which share all the same traits as potential tasks but will be being selected between as starting points for the project.
+// below is a list of components, their abbreviation, and how they interact with each other
+
+// Fileable (Fi): +B, +S, +Gra, +I, -R, -Fi, -W, -DR
+// Writable (W): +Gro, +R, +Fi, -W, -Gra, -Dr
+// Gross File Size Requirements (Gh): +Gh, +Ps, --N, -Da
+// Data Complexity (Da): +Gh, +Ps, -Fg, -Da, -Fa
+// Far-reaching Affects (Fa): +Dr, +Fg, -Fi, -Ps, -S, +D
+// Protected files (Ps): +Po, +Fg, -Ps, --Gh, -S
+// Scalable (S): +R, +I, +Fa, -S, -E, -Fi, -W
+// Rigid structure (R): +Fl, +B, +Fi, +I, -Fg, -Gro, -S
+// Gradient of files (Gra): +Gro, +R, +W, -Fl, -Fi, -PS, -B, -S, -Gra, -Dr
+// Floating point numbers (Fl): +Fg, +B, +Gra, -R, -S, -E
+// Nascent (N): -R, --Gh, -S
+// Buggy (B): +Gra, +Ps, +Da, -Fg, -Fl, -Ps, -Gh, -S, -FI, -Fa
+// Grounded in existing ark systems (Gro): --fl, -B, -Gra, +Ps, +R, +S, +Fi, +E
+// Elementary (E): +Fl, +W, --Gro, -Dr, -Gra, -E
+// Potentially intensive (Po): +Gra, +Fa, -Ps, -Gro, -R, --S, -Gh
+// Isolated (I): +Dr, +Gro, +Gra, +Fl, -S, -Fi, -W, -I
+// Draining resources (Dr): -S, -Fa, +Dr
+// Friction with existing systems (Fg): +N, --Gh, +R, +S, +I, +Da, -Fl, -Ps, -B, -Ps, -Fa
+
+// The way the program needs to work is each completed task will have its compatibility calculated by comparing it to the potential task
+// there are five different compatabilities: impossible, reasonable, average, simple, and easy
+// A completed task that was Fileable with be "avergage" compatability with a potential task that has Data Complexity
+// However, a completed Fileable task will have "simple" compatability with a potential task that is Isolated, as seen in the +I above
+// The Fileable task will have a "reasonable" compatability with a Rigid Structure task, as seen by the -R
+// These components stack; a Fileable completed task has "easy" compatabilty with an Isolated and Buggy potential task because it has +I and +B
+// If an existing task has two components, the one that has a better compatability with the potential task will be used to determine the compatability.
+// As a start, I'd like to be able to compare one potential task and one existing task and see their compatability.
+// this interface should be integrated into the existing project and opened with a button labeled Project Correlation

@@ -12,3 +12,7 @@
 # VS / editor
 .vs/
 *.user
+
+# Generated resources and cache
+app.res
+__pycache__/
