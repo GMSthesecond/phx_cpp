@@ -4,6 +4,7 @@
 #include "settings.h"
 #include "project_correlation.h"
 #include "organize.h"
+#include "rename.h"
 
 // Enable visual styles (modern button rendering) without a separate .manifest file
 #pragma comment(lib, "comctl32.lib")
@@ -32,14 +33,33 @@
 // Column 3
 #define ID_BUTTON_DECEASED     40
 #define ID_BUTTON_HBP_WELLS    41
-#define ID_BUTTON_MASTER_RPT   42
-#define ID_BUTTON_CLOSE_DATE   43
 #define ID_BUTTON_ORGANIZE     44
+#define ID_BUTTON_CASE_MATCHUP 46
+#define ID_BUTTON_RENAME       47
+// Column 4
+#define ID_BUTTON_CLOSE_DATE   43
+#define ID_BUTTON_NONHBP_MI    45
 
-HFONT  g_hTitleFont  = NULL;
-HFONT  g_hButtonFont = NULL;
-HBRUSH g_hBgBrush    = NULL;
-HWND   g_hwndMain    = NULL;
+HFONT  g_hTitleFont   = NULL;
+HFONT  g_hButtonFont  = NULL;
+HBRUSH g_hBgBrush     = NULL;
+HBRUSH g_hYellowBrush = NULL;
+HWND   g_hwndMain     = NULL;
+
+// Buttons whose click handler is not implemented yet — drawn light yellow as a visual "not done" cue
+static const int g_unwiredButtonIds[] = {
+    ID_BUTTON_INDEX, ID_BUTTON_TPP_LHPP, ID_BUTTON_COST,
+    ID_BUTTON_ELMI, ID_BUTTON_DNM, ID_BUTTON_HBPNW, ID_BUTTON_LE, ID_BUTTON_LHP,
+    ID_BUTTON_NHBPW, ID_BUTTON_SIB, ID_BUTTON_UNLE, ID_BUTTON_SL,
+    ID_BUTTON_HBP_WELLS,
+};
+
+bool IsUnwiredButton(int id) {
+    for (int candidate : g_unwiredButtonIds) {
+        if (candidate == id) return true;
+    }
+    return false;
+}
 
 void LayoutControls(HWND hwnd) {
     RECT rc;
@@ -51,7 +71,7 @@ void LayoutControls(HWND hwnd) {
     InvalidateRect(hTitle, NULL, TRUE);
 
     int bw = 200, bh = 30, gap = 10, y0 = 70;
-    int c1 = 10, c2 = c1 + bw + gap, c3 = c2 + bw + gap;
+    int c1 = 10, c2 = c1 + bw + gap, c3 = c2 + bw + gap, c4 = c3 + bw + gap;
 
     // Column 1
     int y = y0;
@@ -60,8 +80,7 @@ void LayoutControls(HWND hwnd) {
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_STR),       c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_TPP_LHPP),  c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DOWNLOAD),  c1, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_COST),      c1, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CORR),      c1, y, bw, bh, TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_COST),      c1, y, bw, bh, TRUE);
 
     // Settings pinned to bottom-left
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_SETTINGS),  c1, rc.bottom - bh - gap, 90, bh, TRUE);
@@ -82,9 +101,15 @@ void LayoutControls(HWND hwnd) {
     y = y0;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DECEASED),    c3, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_HBP_WELLS),   c3, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_MASTER_RPT),  c3, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CLOSE_DATE),  c3, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_ORGANIZE),    c3, y, bw, bh, TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CORR),        c3, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_ORGANIZE),    c3, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CASE_MATCHUP), c3, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_RENAME),      c3, y, bw, bh, TRUE);
+
+    // Column 4
+    y = y0;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CLOSE_DATE),  c4, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_NONHBP_MI),   c4, y, bw, bh, TRUE);
 }
 
 // Called by Windows for every event (paint, close, etc.) that happens to the main window
@@ -135,14 +160,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // Column 3
                 { ID_BUTTON_DECEASED,    TEXT("Deceased")              },
                 { ID_BUTTON_HBP_WELLS,   TEXT("HBP Wells")             },
-                { ID_BUTTON_MASTER_RPT,  TEXT("Master Report")         },
-                { ID_BUTTON_CLOSE_DATE,  TEXT("Close Date")            },
                 { ID_BUTTON_ORGANIZE,    TEXT("Organize")              },
+                { ID_BUTTON_CASE_MATCHUP, TEXT("Case Matchup")         },
+                { ID_BUTTON_RENAME,      TEXT("Rename")                },
+                // Column 4
+                { ID_BUTTON_CLOSE_DATE,  TEXT("Close Date")            },
+                { ID_BUTTON_NONHBP_MI,   TEXT("Case Update")           },
             };
             for (auto& b : buttons) {
+                DWORD style = WS_CHILD | WS_VISIBLE |
+                    (IsUnwiredButton(b.id) ? (DWORD)BS_OWNERDRAW : (DWORD)BS_PUSHBUTTON);
                 HWND hBtn = CreateWindowEx(
                     0, TEXT("BUTTON"), b.label,
-                    WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                    style,
                     0, 0, 0, 0,
                     hwnd, (HMENU)(UINT_PTR)b.id,
                     ((LPCREATESTRUCT)lParam)->hInstance, NULL
@@ -160,6 +190,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             SetBkColor(hdc, RGB(240, 240, 240));
             SetTextColor(hdc, RGB(0, 0, 0));
             return (LRESULT)g_hBgBrush;
+        }
+        case WM_DRAWITEM: {
+            LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lParam;
+            if (dis->CtlType != ODT_BUTTON) break;
+
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            FillRect(dis->hDC, &dis->rcItem, g_hYellowBrush);
+            FrameRect(dis->hDC, &dis->rcItem, (HBRUSH)GetStockObject(GRAY_BRUSH));
+
+            TCHAR text[256];
+            GetWindowText(dis->hwndItem, text, 256);
+            SetBkMode(dis->hDC, TRANSPARENT);
+            SetTextColor(dis->hDC, RGB(0, 0, 0));
+            HFONT hOldFont = (HFONT)SelectObject(dis->hDC, g_hButtonFont);
+            RECT textRect = dis->rcItem;
+            if (pressed) OffsetRect(&textRect, 1, 1);
+            DrawText(dis->hDC, text, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dis->hDC, hOldFont);
+
+            if (dis->itemState & ODS_FOCUS) DrawFocusRect(dis->hDC, &dis->rcItem);
+            return TRUE;
         }
         case WM_COMMAND: {
             if (LOWORD(wParam) == ID_BUTTON_PPIQ) {
@@ -231,11 +282,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (LOWORD(wParam) == ID_BUTTON_SL) {
                 // TODO: implement SL
             } else if (LOWORD(wParam) == ID_BUTTON_DECEASED) {
-                // TODO: implement Deceased
+                TCHAR exeDir[MAX_PATH] = {};
+                GetModuleFileName(NULL, exeDir, MAX_PATH);
+                TCHAR* slash = _tcsrchr(exeDir, TEXT('\\'));
+                if (slash) *(slash + 1) = TEXT('\0');
+
+                TCHAR cmd[4096] = {};
+                wsprintf(cmd, TEXT("py \"%sdeceased.py\""), exeDir);
+
+                STARTUPINFO si = { sizeof(si) };
+                PROCESS_INFORMATION pi = {};
+                if (CreateProcess(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                    CloseHandle(pi.hThread);
+                    CloseHandle(pi.hProcess);
+                } else {
+                    MessageBox(hwnd,
+                        TEXT("Could not launch deceased.py.\n")
+                        TEXT("Ensure Python is installed and available in your PATH."),
+                        TEXT("Error"), MB_ICONERROR);
+                }
             } else if (LOWORD(wParam) == ID_BUTTON_HBP_WELLS) {
                 // TODO: implement HBP Wells
-            } else if (LOWORD(wParam) == ID_BUTTON_MASTER_RPT) {
-                // TODO: implement Master Report
             } else if (LOWORD(wParam) == ID_BUTTON_CLOSE_DATE) {
                 TCHAR exeDir[MAX_PATH] = {};
                 GetModuleFileName(NULL, exeDir, MAX_PATH);
@@ -256,8 +323,50 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         TEXT("Ensure Python is installed and available in your PATH."),
                         TEXT("Error"), MB_ICONERROR);
                 }
+            } else if (LOWORD(wParam) == ID_BUTTON_NONHBP_MI) {
+                TCHAR exeDir[MAX_PATH] = {};
+                GetModuleFileName(NULL, exeDir, MAX_PATH);
+                TCHAR* slash = _tcsrchr(exeDir, TEXT('\\'));
+                if (slash) *(slash + 1) = TEXT('\0');
+
+                TCHAR cmd[4096] = {};
+                wsprintf(cmd, TEXT("py \"%snon_hbp_mi.py\""), exeDir);
+
+                STARTUPINFO si = { sizeof(si) };
+                PROCESS_INFORMATION pi = {};
+                if (CreateProcess(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                    CloseHandle(pi.hThread);
+                    CloseHandle(pi.hProcess);
+                } else {
+                    MessageBox(hwnd,
+                        TEXT("Could not launch non_hbp_mi.py.\n")
+                        TEXT("Ensure Python is installed and available in your PATH."),
+                        TEXT("Error"), MB_ICONERROR);
+                }
             } else if (LOWORD(wParam) == ID_BUTTON_ORGANIZE) {
                 OpenOrganize(hwnd);
+            } else if (LOWORD(wParam) == ID_BUTTON_CASE_MATCHUP) {
+                TCHAR exeDir[MAX_PATH] = {};
+                GetModuleFileName(NULL, exeDir, MAX_PATH);
+                TCHAR* slash = _tcsrchr(exeDir, TEXT('\\'));
+                if (slash) *(slash + 1) = TEXT('\0');
+
+                TCHAR cmd[4096] = {};
+                wsprintf(cmd, TEXT("py \"%scase_matchup.py\""), exeDir);
+
+                STARTUPINFO si = { sizeof(si) };
+                PROCESS_INFORMATION pi = {};
+                if (CreateProcess(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                    CloseHandle(pi.hThread);
+                    CloseHandle(pi.hProcess);
+                } else {
+                    MessageBox(hwnd,
+                        TEXT("Could not launch case_matchup.py.\n")
+                        TEXT("Ensure Python is installed and available in your PATH."),
+                        TEXT("Error"), MB_ICONERROR);
+                }
+            } else if (LOWORD(wParam) == ID_BUTTON_RENAME) {
+                OpenRename(hwnd);
             } else if (LOWORD(wParam) == ID_BUTTON_CORR) {
                 OpenCorrelation(hwnd);
             } else if (LOWORD(wParam) == ID_BUTTON_STR) {
@@ -300,7 +409,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     LoadFolders();
     LoadCompletedTasks();
 
-    g_hBgBrush = CreateSolidBrush(RGB(240, 240, 240));
+    g_hBgBrush     = CreateSolidBrush(RGB(240, 240, 240));
+    g_hYellowBrush = CreateSolidBrush(RGB(255, 255, 153));
 
     const TCHAR CLASS_NAME[] = TEXT("MainWindow");
 
@@ -317,6 +427,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     RegisterSettingsClass(hInstance);     // register the settings window class defined in settings.cpp
     RegisterCorrelationClass(hInstance);  // register the project correlation window class
     RegisterOrganizeClass(hInstance);     // register the classify dialog class used by Organize
+    RegisterRenameClass(hInstance);       // register the dialog class used by Rename
 
     g_hwndMain = CreateWindowEx(
         0, CLASS_NAME, TEXT("Phoenix Land Department Reporting"),
@@ -336,5 +447,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     CoUninitialize();
     if (g_hBgBrush) DeleteObject(g_hBgBrush);
+    if (g_hYellowBrush) DeleteObject(g_hYellowBrush);
     return (int)msg.wParam;
 }
