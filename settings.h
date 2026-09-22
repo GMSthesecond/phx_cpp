@@ -8,6 +8,8 @@
 #define ID_FOLDER_STR_CHANGE  14
 #define ID_FOLDER_CD_LABEL    15
 #define ID_FOLDER_CD_CHANGE   16
+#define ID_FOLDER_MAPS_LABEL  17
+#define ID_FOLDER_MAPS_CHANGE 18
 
 // Registers the settings window class — call once in WinMain before any window is created
 void RegisterSettingsClass(HINSTANCE hInstance);

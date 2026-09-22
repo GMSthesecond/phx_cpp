@@ -9,9 +9,9 @@ _PPIQ_FOLDER = r"C:\Users\Ethan Mesecher\Desktop\PPIQ"
 # (url, generation_wait_ms) — time between triggering generation and checking the notification panel
 _PPIQ_URLS = [
     ('https://ark.phxcapitalgroup.com/report?recordId=679290fbcd9e6c677fc1cb5d', 30_000),  # Landholdings In Queue (EM) — slow to prepare
-    ('https://ark.phxcapitalgroup.com/report?recordId=6734f573e60ff45d13cc57a0', 30_000),  # EM All Landholdings
+    ('https://ark.phxcapitalgroup.com/report?recordId=6734f573e60ff45d13cc57a0', 60_000),  # EM All Landholdings
     ('https://ark.phxcapitalgroup.com/report?recordId=6792a720ccb927b757c7a6be', 10_000),  # All LHs In Queue (EM)
-    ('https://ark.phoenixenergy.com/report?recordId=67f99dc7ca970119b2f06532',   60_000),  # All LHs In Queue (EM) (Inverse)
+    ('https://ark.phoenixenergy.com/report?recordId=67f99dc7ca970119b2f06532',   80_000),  # All LHs In Queue (EM) (Inverse)
 ]
 
 

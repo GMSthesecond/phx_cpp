@@ -4,6 +4,7 @@ call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\v
 rc /nologo app.rc
 cl /nologo /EHsc /D UNICODE /D _UNICODE *.cpp app.res user32.lib gdi32.lib ole32.lib shell32.lib comctl32.lib /Fe:phxcpp.exe /link /subsystem:windows
 if %errorlevel% == 0 (
+    mt -nologo -manifest phxcpp.exe.manifest -outputresource:phxcpp.exe;1
     explorer phxcpp.exe
     git push
 ) else (

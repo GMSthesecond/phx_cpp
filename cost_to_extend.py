@@ -2,32 +2,22 @@ import ctypes
 import csv
 import os
 import re
-from datetime import date, datetime, timedelta
-from playwright.sync_api import sync_playwright
+from datetime import date
+
 import ark_common
 
 
 def _notify(message):
-    ctypes.windll.user32.MessageBoxW(0, message, 'Close Dates', 0x40)
+    ctypes.windll.user32.MessageBoxW(0, message, 'Cost to Extend', 0x40)
 
-_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=c348d047aeebd9028494bf6c'
+
+_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=67f413a4878d0fb2c4cf3411'
 _UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'
 
 
-def _target_date():
-    today = date.today()
-    if today.weekday() == 0:  # Monday — use previous Friday
-        return today - timedelta(days=3)
-    return today - timedelta(days=1)
-
-
-def _parse_date(s):
-    for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d'):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
-    raise ValueError(f'Unrecognized date format: {s!r}')
+def _to_float(s):
+    s = s.strip().replace(',', '').replace('$', '')
+    return float(s) if s else 0.0
 
 
 def _upload(page, csv_path, upload_name, dataset='Landholdings', operation='Update'):
@@ -73,13 +63,14 @@ def _upload(page, csv_path, upload_name, dataset='Landholdings', operation='Upda
 
 
 def main():
-    out_dir = ark_common.read_folder('CloseDates', r'C:\Users\Ethan Mesecher\Desktop\Close Date')
+    out_dir = ark_common.read_folder('CostToExtend', r'C:\Users\Ethan Mesecher\Desktop\C2E')
     os.makedirs(out_dir, exist_ok=True)
 
     username, password = ark_common.read_credentials()
-    target = _target_date()
-    today_str = date.today().strftime('%m.%d.%Y')
-    rows = []
+    today_str = date.today().strftime('%m/%d/%Y')
+    today_file_str = date.today().strftime('%m.%d.%Y')
+
+    from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=False)
@@ -96,34 +87,44 @@ def main():
 
             dl = ark_common.trigger_download(page, _REPORT_URL)
 
-            # Read the temp file while the browser still holds it open
-            with open(dl.path(), newline='', encoding='utf-8-sig') as f:
+            # Move the downloaded report into the C2E folder
+            src_path = os.path.join(out_dir, dl.suggested_filename)
+            dl.save_as(src_path)
+            print(f'Downloaded: {src_path}', flush=True)
+
+            rows = []
+            with open(src_path, newline='', encoding='utf-8-sig') as f:
                 reader = csv.reader(f)
                 next(reader, None)  # skip header row
                 for row in reader:
-                    if len(row) < 3:
+                    # A=Id, C=Total Cost to Extend, D=Land Holding NMA, E=$/Acre for Extension, N=Lease Notes & Additional Documentation
+                    if len(row) < 14 or not row[0].strip():
                         continue
-                    if len(row) >= 5 and row[3].strip() == 'Deferred':
-                        _notify('A deferred deal was skipped')
-                        continue
-                    record_id = row[1].strip()
-                    close_date_str = row[2].strip()
+                    record_id = row[0].strip()
                     try:
-                        close_date = _parse_date(close_date_str)
+                        total_cost = _to_float(row[2])
+                        nma = _to_float(row[3])
+                        per_acre = _to_float(row[4])
                     except ValueError:
                         continue
-                    if close_date == target:
-                        rows.append((record_id, close_date_str))
+                    notes = row[13]
 
-            # Write filtered CSV before upload (path needed by _upload)
-            out_path = os.path.join(out_dir, f'close_dates.{today_str}.csv')
-            with open(out_path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['Id', 'Close Date'])
-                writer.writerows(rows)
-            print(f'Saved {len(rows)} row(s) to: {out_path}', flush=True)
+                    calculated = nma * per_acre
+                    if abs(calculated - total_cost) > 10:
+                        new_notes = f'{today_str} EM - Updated to match calculated cost to extend.\n\n{notes}'
+                        rows.append((record_id, calculated, new_notes))
 
-            _upload(page, out_path, f'close date {today_str}')
+            if not rows:
+                print('No rows exceeded the threshold — skipping export and upload.', flush=True)
+            else:
+                out_path = os.path.join(out_dir, f'cost_to_extend.{today_file_str}.csv')
+                with open(out_path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['Id', 'Total Cost to Extend', 'Lease Notes & Additional Documentation'])
+                    writer.writerows(rows)
+                print(f'Saved {len(rows)} row(s) to: {out_path}', flush=True)
+
+                _upload(page, out_path, f'cost to extend {today_file_str}')
         finally:
             # Persist whatever session now exists — including a freshly completed manual
             # login/2FA — even if a step above failed, so a crash doesn't force the user
@@ -136,4 +137,4 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as e:
-        _notify(f'Close Dates failed:\n{e}')
+        _notify(f'Cost to Extend failed:\n{e}')

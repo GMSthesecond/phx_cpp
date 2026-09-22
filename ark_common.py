@@ -16,6 +16,12 @@ def read_credentials():
     return cfg['Credentials']['username'], cfg['Credentials']['password']
 
 
+def read_enverus_credentials():
+    cfg = configparser.ConfigParser()
+    cfg.read(_INI_PATH)
+    return cfg['EnverusCredentials']['identifier'], cfg['EnverusCredentials']['password']
+
+
 def read_folder(key, default):
     cfg = configparser.ConfigParser()
     cfg.read(_INI_PATH)

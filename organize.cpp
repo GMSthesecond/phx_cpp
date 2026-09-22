@@ -4,15 +4,16 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <regex>
 
 // ─── Column definitions ───────────────────────────────────────────────────────
 
-static const int NUM_COLS  = 13; // exported columns
-static const int IGNORE_COL = 13; // stored in rules but never written to output
+static const int NUM_COLS  = 15; // exported columns
+static const int IGNORE_COL = 15; // stored in rules but never written to output
 static const wchar_t* const COLS[NUM_COLS] = {
-    L"Income", L"Mortgage", L"Bills", L"Medical", L"Groceries",
-    L"Takeout", L"Transport", L"House", L"Travel", L"Wyn",
-    L"Ruby", L"Mutual Aid", L"Savings"
+    L"Income", L"Mortgage", L"Bills", L"Health", L"Groceries",
+    L"Cats", L"Transport", L"Takeout", L"House", L"Travel",
+    L"Wyn", L"Ruby", L"Briar", L"Mutual Aid", L"Savings"
 };
 
 static const wchar_t* DATA_PATH   = L"C:\\Users\\Ethan Mesecher\\Desktop\\Organization\\Data.CSV";
@@ -31,10 +32,53 @@ static void GetRulesPath(wchar_t* out) {
     wsprintf(out, L"%s\\organize_rules.ini", dir);
 }
 
+// Rules are saved as description -> column INDEX, so reordering/inserting
+// columns silently repoints old rules at the wrong category unless the
+// saved indices are remapped. Maps each pre-Briar column index (0-12, plus
+// 13 for "Ignore") to its new index under the current COLS layout.
+static const int OLD_TO_NEW_COL_V1[14] = {
+    0,  // Income     -> Income
+    1,  // Mortgage   -> Mortgage
+    2,  // Bills      -> Bills
+    3,  // Medical    -> Health
+    4,  // Groceries  -> Groceries
+    7,  // Takeout    -> Takeout
+    6,  // Transport  -> Transport
+    8,  // House      -> House
+    9,  // Travel     -> Travel
+    10, // Wyn        -> Wyn
+    11, // Ruby       -> Ruby
+    13, // Mutual Aid -> Mutual Aid
+    14, // Savings    -> Savings
+    15, // Ignore     -> Ignore
+};
+
+// One-time migration of rules saved under the pre-Briar column layout.
+static void MigrateRuleColumnsIfNeeded(const wchar_t* path) {
+    wchar_t schema[16] = {};
+    GetPrivateProfileString(L"Meta", L"ColumnSchema", L"1", schema, ARRAYSIZE(schema), path);
+    if (_wtoi(schema) >= 2) return;
+
+    wchar_t buf[65536] = {};
+    GetPrivateProfileSection(L"Rules", buf, ARRAYSIZE(buf), path);
+    for (const wchar_t* p = buf; *p; p += wcslen(p) + 1) {
+        const wchar_t* eq = wcschr(p, L'=');
+        if (!eq) continue;
+        std::wstring key(p, eq - p);
+        int oldCol = _wtoi(eq + 1);
+        if (oldCol < 0 || oldCol >= 14) continue; // unrecognized; leave as-is
+        wchar_t val[8];
+        wsprintf(val, L"%d", OLD_TO_NEW_COL_V1[oldCol]);
+        WritePrivateProfileString(L"Rules", key.c_str(), val, path);
+    }
+    WritePrivateProfileString(L"Meta", L"ColumnSchema", L"2", path);
+}
+
 static void LoadRules() {
     g_rules.clear();
     wchar_t path[MAX_PATH];
     GetRulesPath(path);
+    MigrateRuleColumnsIfNeeded(path);
     // GetPrivateProfileSection returns multi-string: "KEY=val\0KEY=val\0\0"
     wchar_t buf[65536] = {};
     GetPrivateProfileSection(L"Rules", buf, ARRAYSIZE(buf), path);
@@ -201,6 +245,141 @@ static std::wstring ToUpper(std::wstring s) {
     return s;
 }
 
+// "STARBUCKS COFFEE #1234" -> "Starbucks Coffee" — first letter of each word
+// capitalized, the rest lowercased; digits/punctuation just reset the
+// word boundary rather than being cased themselves.
+static std::wstring TitleCase(std::wstring s) {
+    bool startOfWord = true;
+    for (auto& c : s) {
+        if (iswalpha(c)) {
+            c = startOfWord ? (wchar_t)towupper(c) : (wchar_t)towlower(c);
+            startOfWord = false;
+        } else {
+            startOfWord = true;
+        }
+    }
+    return s;
+}
+
+// ─── Scrub words (manual list of terms stripped from transaction notes) ──────
+// Stored in the same INI as the rules so new words can be added without a
+// rebuild. Any default below not already present in the INI is merged in on
+// load, so adding a new entry here and rebuilding is enough to pick it up —
+// it isn't limited to a one-time seed of a brand-new INI.
+
+static std::vector<std::wstring> g_scrubWords;
+
+static void LoadScrubWords() {
+    g_scrubWords.clear();
+    wchar_t path[MAX_PATH];
+    GetRulesPath(path);
+    wchar_t buf[8192] = {};
+    GetPrivateProfileSection(L"ScrubWords", buf, ARRAYSIZE(buf), path);
+    for (const wchar_t* p = buf; *p; p += wcslen(p) + 1) {
+        std::wstring line(p);
+        size_t eq = line.find(L'=');
+        std::wstring word = Trim(eq == std::wstring::npos ? line : line.substr(0, eq));
+        if (!word.empty()) g_scrubWords.push_back(ToUpper(word));
+    }
+
+    static const wchar_t* const defaults[] = { L"CASPER", L"GOOGLE", L"PURCHASE", L"WY", L"O WEB ID: PAYPAL", L"O PAYROLL", L"PPD", L"WEB ID:",
+        L"www.", L".c www.ladder", L".COM", L"MKTPL", L"*", L"ONLINE", L"ACHPAY WEB", L"Web", L"BILL", L"POWER",
+        L"New York", L"SFH PAD MTG PYMT PPD", L"Thank You-Mobile", L"O PAYROLL PPD ", L"CO ENTRY DESCR:CASHOUT SEC:PPD ORIG", L"ORIG CO NAME:",
+        L"ORIG CO NAME:", L"ID:", L"CO ENTRY DESCR:CASHOUT SEC: ORIG", L"SFH PAD MTG PYMT", L"DEPT EDUCATION", L"-"
+     };
+    for (auto* w : defaults) {
+        std::wstring up = ToUpper(Trim(w));
+        if (up.empty()) continue;
+        bool have = false;
+        for (auto& existing : g_scrubWords) if (existing == up) { have = true; break; }
+        if (have) continue;
+        WritePrivateProfileString(L"ScrubWords", w, L"1", path);
+        g_scrubWords.push_back(up);
+    }
+}
+
+// Escapes regex metacharacters so a scrub word can be dropped into a pattern
+// as a literal (the ScrubWords list can contain things like "*", ".", "-").
+static std::wstring EscapeRegex(const std::wstring& s) {
+    static const std::wstring special = L".^$|()[]{}*+?\\";
+    std::wstring out;
+    out.reserve(s.size() * 2);
+    for (wchar_t c : s) {
+        if (special.find(c) != std::wstring::npos) out += L'\\';
+        out += c;
+    }
+    return out;
+}
+
+// Strips useless identifying junk from a transaction description before it
+// goes into the notes column: label+number IDs ("ID: 5264681992",
+// "REF# 12345"), bare "#1234" tags, phone-number-shaped digit runs
+// ("307-234-2121", "800-9106463"), bare numeric IDs ("1393"), opaque
+// alphanumeric reference codes ("P474095192304", "*532DA1WV1",
+// "023860430ACHPAY", "ST-R3I5X0S2M3W5"), and any manually configured scrub
+// words (case-insensitive, whole word) — then collapses any resulting runs
+// of whitespace down to one space and title-cases the result ("STARBUCKS
+// COFFEE" -> "Starbucks Coffee").
+static std::wstring ScrubDesc(const std::wstring& desc) {
+    std::wstring s = desc;
+
+    static const std::wregex reLabelId(
+        LR"(\b(ID|REF|REFERENCE|CONF|CONFIRMATION|AUTH|TRACE|TXN|TRANS|ACCT|ACCOUNT)\.?\s*[:#]?\s*\d+\b)",
+        std::regex_constants::icase);
+    s = std::regex_replace(s, reLabelId, L" ");
+
+    static const std::wregex reHashId(LR"(#\s*\d+)");
+    s = std::regex_replace(s, reHashId, L" ");
+
+    // Phone numbers and other long dashed/dotted digit runs (7+ digits total).
+    static const std::wregex rePhone(LR"(\b\d[\d\-.]{5,}\d\b)");
+    s = std::regex_replace(s, rePhone, L" ");
+
+    // Bare numeric tokens (order numbers, confirmation codes, etc.).
+    static const std::wregex reBareNum(LR"(\b\d{4,}\b)");
+    s = std::regex_replace(s, reBareNum, L" ");
+
+    // Opaque alphanumeric reference codes: a token (optionally prefixed with
+    // * or #, optionally hyphen-joined, e.g. "ST-R3I5X0S2M3W5") that mixes
+    // letters and digits and has at least 6 characters of alphanumeric
+    // content. Real category words don't look like this, so it's a safe net
+    // for the POS/ACH/processor reference junk that shows up in descriptions.
+    {
+        static const std::wregex reToken(LR"([*#]?[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\b)");
+        std::wstring out;
+        out.reserve(s.size());
+        size_t last = 0;
+        for (auto it = std::wsregex_iterator(s.begin(), s.end(), reToken);
+             it != std::wsregex_iterator(); ++it) {
+            auto& m = *it;
+            std::wstring tok = m.str();
+            std::wstring alnum;
+            for (wchar_t c : tok) if (iswalnum(c)) alnum += c;
+            bool hasDigit = false, hasAlpha = false;
+            for (wchar_t c : alnum) {
+                if (iswdigit(c)) hasDigit = true;
+                if (iswalpha(c)) hasAlpha = true;
+            }
+            bool qualifies = hasDigit && hasAlpha && alnum.size() >= 6;
+            out.append(s, last, (size_t)m.position() - last);
+            out += qualifies ? L" " : tok;
+            last = (size_t)m.position() + (size_t)m.length();
+        }
+        out.append(s, last, s.size() - last);
+        s = out;
+    }
+
+    for (auto& w : g_scrubWords) {
+        std::wregex re(L"\\b" + EscapeRegex(w) + L"\\b", std::regex_constants::icase);
+        s = std::regex_replace(s, re, L" ");
+    }
+
+    static const std::wregex reWs(LR"(\s+)");
+    s = std::regex_replace(s, reWs, L" ");
+    s = Trim(s);
+    return TitleCase(s.empty() ? Trim(desc) : s); // never blank out a note entirely
+}
+
 // Minimal CSV tokenizer — handles double-quoted fields with embedded commas/quotes.
 static std::vector<std::wstring> SplitCSV(const std::wstring& line) {
     std::vector<std::wstring> out;
@@ -321,13 +500,14 @@ static int FindRule(const std::wstring& upperDesc) {
 // ─── Main organize logic ──────────────────────────────────────────────────────
 
 struct DayRow {
-    double       c[13];
-    std::wstring details; // semicolon-separated descriptions of categorized transactions
-    DayRow() { for (int i = 0; i < 13; i++) c[i] = 0.0; }
+    double       c[NUM_COLS];
+    std::wstring notes[NUM_COLS]; // per-column: "Desc $amt; Desc $amt"
+    DayRow() { for (int i = 0; i < NUM_COLS; i++) c[i] = 0.0; }
 };
 
 static void RunOrganize(HWND hwndParent) {
     LoadRules();
+    LoadScrubWords();
 
     // Read Data.CSV
     HANDLE hf = CreateFile(DATA_PATH, GENERIC_READ, FILE_SHARE_READ,
@@ -371,7 +551,7 @@ static void RunOrganize(HWND hwndParent) {
         }
     }
 
-    // Parse transactions (row 0 is the header — skip it).
+    // Parse transactions — detect column indices from header row.
     struct Tx {
         Date        date;
         std::wstring dateRaw, desc, amountRaw;
@@ -381,17 +561,36 @@ static void RunOrganize(HWND hwndParent) {
     Date minD{ 9999,12,31 }, maxD{ 1900,1,1 };
     bool hasData = false;
 
+    int colDate = -1, colDesc = -1, colAmt = -1;
+    if (!lines.empty()) {
+        auto hdr = SplitCSV(lines[0]);
+        for (int i = 0; i < (int)hdr.size(); ++i) {
+            std::wstring h = ToUpper(Trim(hdr[i]));
+            if (h == L"POSTING DATE" || h == L"POST DATE") colDate = i;
+            else if (h == L"DESCRIPTION")                  colDesc = i;
+            else if (h == L"AMOUNT")                       colAmt  = i;
+        }
+    }
+    if (colDate < 0 || colDesc < 0 || colAmt < 0) {
+        MessageBox(hwndParent,
+            L"Could not find required columns in Data.CSV.\n\n"
+            L"Expected headers: \"Posting Date\" or \"Post Date\", \"Description\", \"Amount\".",
+            L"Organize — Error", MB_ICONERROR);
+        return;
+    }
+
     for (size_t i = 1; i < lines.size(); ++i) {
         std::wstring ln = Trim(lines[i]);
         if (ln.empty()) continue;
         auto f = SplitCSV(ln);
-        if (f.size() < 3) continue;
+        int need = 1 + max(colDate, max(colDesc, colAmt));
+        if ((int)f.size() < need) continue;
         Date d{};
-        if (!ParseDate(f[0], d)) continue;
-        std::wstring desc = Trim(f[1]);
+        if (!ParseDate(f[colDate], d)) continue;
+        std::wstring desc = Trim(f[colDesc]);
         if (desc.empty()) continue;
-        double amt = ParseAmount(f[2]);
-        txns.push_back({ d, Trim(f[0]), desc, Trim(f[2]), amt });
+        double amt = ParseAmount(f[colAmt]);
+        txns.push_back({ d, Trim(f[colDate]), desc, Trim(f[colAmt]), amt });
         if (!hasData || DateLt(d, minD)) minD = d;
         if (!hasData || DateLt(maxD, d)) maxD = d;
         hasData = true;
@@ -413,21 +612,26 @@ static void RunOrganize(HWND hwndParent) {
     std::map<std::wstring, DayRow> dayMap;
 
     for (auto& tx : txns) {
-        std::wstring upper = ToUpper(tx.desc);
-        int col = FindRule(upper);
-        if (col < 0) {
-            wchar_t snippet[512] = {};
-            col = ClassifyTx(hwndParent,
-                tx.dateRaw.c_str(), tx.desc.c_str(), tx.amountRaw.c_str(),
-                snippet, ARRAYSIZE(snippet));
-            if (col >= 0 && snippet[0])
-                SaveRule(ToUpper(snippet), col);
+        int col;
+        if (tx.amount > 0.0) {
+            col = 0; // Income
+        } else {
+            std::wstring upper = ToUpper(tx.desc);
+            col = FindRule(upper);
+            if (col < 0) {
+                wchar_t snippet[512] = {};
+                col = ClassifyTx(hwndParent,
+                    tx.dateRaw.c_str(), tx.desc.c_str(), tx.amountRaw.c_str(),
+                    snippet, ARRAYSIZE(snippet));
+                if (col >= 0 && snippet[0])
+                    SaveRule(ToUpper(snippet), col);
+            }
         }
         if (col >= 0 && col < NUM_COLS) {
             auto& row = dayMap[DateKey(tx.date)];
             row.c[col] += tx.amount;
-            if (!row.details.empty()) row.details += L"; ";
-            row.details += tx.desc;
+            if (!row.notes[col].empty()) row.notes[col] += L"; ";
+            row.notes[col] += ScrubDesc(tx.desc) + L" " + FmtAmount(tx.amount);
         }
         // col == IGNORE_COL: rule matched "Ignore" — skip silently, no output
     }
@@ -456,10 +660,13 @@ static void RunOrganize(HWND hwndParent) {
     DWORD nw = 0;
     WriteFile(hOut, bom, 3, &nw, NULL);
 
-    // Header row
+    // Header row: Date, Income, Income Notes, Mortgage, Mortgage Notes, ...
     std::wstring hdr = L"Date";
-    for (int c = 0; c < NUM_COLS; c++) { hdr += L','; hdr += COLS[c]; }
-    hdr += L",Details\r\n";
+    for (int c = 0; c < NUM_COLS; c++) {
+        hdr += L','; hdr += COLS[c];
+        hdr += L','; hdr += COLS[c]; hdr += L" Notes";
+    }
+    hdr += L"\r\n";
     WriteW(hdr);
 
     // One row per calendar day across the full month span.
@@ -469,9 +676,9 @@ static void RunOrganize(HWND hwndParent) {
         for (int c = 0; c < NUM_COLS; c++) {
             row += L',';
             if (it != dayMap.end()) row += FmtAmount(it->second.c[c]);
+            row += L',';
+            if (it != dayMap.end()) row += EscCSV(it->second.notes[c]);
         }
-        row += L',';
-        if (it != dayMap.end()) row += EscCSV(it->second.details);
         row += L"\r\n";
         WriteW(row);
     }

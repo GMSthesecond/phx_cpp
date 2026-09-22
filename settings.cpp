@@ -10,6 +10,7 @@ static HWND  s_hwndSettings = NULL;
 static TCHAR s_folderDMD[MAX_PATH] = TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\DMD");
 static TCHAR s_folderSTR[MAX_PATH] = TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\AOI-STR");
 static TCHAR s_folderCD[MAX_PATH]  = TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Close Date");
+static TCHAR s_folderMaps[MAX_PATH] = TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Maps");
 
 static void GetIniPath(TCHAR* out) {
     TCHAR appData[MAX_PATH];
@@ -31,6 +32,8 @@ void LoadFolders() {
         s_folderSTR, s_folderSTR, MAX_PATH, iniPath);
     GetPrivateProfileString(TEXT("Folders"), TEXT("CloseDates"),
         s_folderCD, s_folderCD, MAX_PATH, iniPath);
+    GetPrivateProfileString(TEXT("Folders"), TEXT("Maps"),
+        s_folderMaps, s_folderMaps, MAX_PATH, iniPath);
 }
 
 static void SaveFolders() {
@@ -39,6 +42,7 @@ static void SaveFolders() {
     WritePrivateProfileString(TEXT("Folders"), TEXT("DataMeetingDownload"), s_folderDMD, iniPath);
     WritePrivateProfileString(TEXT("Folders"), TEXT("STRVerification"),     s_folderSTR, iniPath);
     WritePrivateProfileString(TEXT("Folders"), TEXT("CloseDates"),          s_folderCD,  iniPath);
+    WritePrivateProfileString(TEXT("Folders"), TEXT("Maps"),                s_folderMaps, iniPath);
 }
 
 // Opens a Vista-style folder picker and writes the chosen path into pathOut.
@@ -105,17 +109,31 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 670, 97, 80, 30, hwnd, (HMENU)ID_FOLDER_CD_CHANGE, hInst, NULL);
 
+            // Row 4: Maps
+            CreateWindowEx(0, TEXT("STATIC"), TEXT("Maps:"),
+                WS_CHILD | WS_VISIBLE | SS_LEFT,
+                10, 142, 200, 20, hwnd, NULL, hInst, NULL);
+            CreateWindowEx(0, TEXT("STATIC"), s_folderMaps,
+                WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
+                215, 142, 450, 20, hwnd, (HMENU)ID_FOLDER_MAPS_LABEL, hInst, NULL);
+            CreateWindowEx(0, TEXT("BUTTON"), TEXT("Change"),
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                670, 137, 80, 30, hwnd, (HMENU)ID_FOLDER_MAPS_CHANGE, hInst, NULL);
+
             return 0;
         }
         case WM_COMMAND: {
             UINT id = LOWORD(wParam);
-            if (id == ID_FOLDER_DMD_CHANGE || id == ID_FOLDER_STR_CHANGE || id == ID_FOLDER_CD_CHANGE) {
-                TCHAR* folder  = (id == ID_FOLDER_DMD_CHANGE) ? s_folderDMD
-                               : (id == ID_FOLDER_STR_CHANGE) ? s_folderSTR
-                               :                                s_folderCD;
-                UINT   labelId = (id == ID_FOLDER_DMD_CHANGE) ? ID_FOLDER_DMD_LABEL
-                               : (id == ID_FOLDER_STR_CHANGE) ? ID_FOLDER_STR_LABEL
-                               :                                ID_FOLDER_CD_LABEL;
+            if (id == ID_FOLDER_DMD_CHANGE || id == ID_FOLDER_STR_CHANGE ||
+                id == ID_FOLDER_CD_CHANGE  || id == ID_FOLDER_MAPS_CHANGE) {
+                TCHAR* folder  = (id == ID_FOLDER_DMD_CHANGE)  ? s_folderDMD
+                               : (id == ID_FOLDER_STR_CHANGE)  ? s_folderSTR
+                               : (id == ID_FOLDER_CD_CHANGE)   ? s_folderCD
+                               :                                 s_folderMaps;
+                UINT   labelId = (id == ID_FOLDER_DMD_CHANGE)  ? ID_FOLDER_DMD_LABEL
+                               : (id == ID_FOLDER_STR_CHANGE)  ? ID_FOLDER_STR_LABEL
+                               : (id == ID_FOLDER_CD_CHANGE)   ? ID_FOLDER_CD_LABEL
+                               :                                 ID_FOLDER_MAPS_LABEL;
                 if (PickFolder(hwnd, folder)) {
                     SetWindowText(GetDlgItem(hwnd, labelId), folder);
                     SaveFolders();
@@ -152,7 +170,7 @@ void OpenSettings(HWND hwndParent) {
         WS_EX_DLGMODALFRAME,
         SETTINGS_CLASS, TEXT("Settings"),
         WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 770, 170,
+        CW_USEDEFAULT, CW_USEDEFAULT, 770, 210,
         hwndParent, NULL, GetModuleHandle(NULL), NULL
     );
     ShowWindow(s_hwndSettings, SW_SHOW);
