@@ -1,10 +1,15 @@
+"""One-off utility: copies closed-deal folders out of Box Drive, renamed with their Base OGLs.
+Not launched by any button and not imported by anything; run by hand with `py box_copy_deals.py`.
+Reads a deal-number/Base-OGL CSV and the Box "Deal Folder\\Closed" tree (hardcoded paths below);
+writes "<OGLs> - <original folder name>" copies into the Continental downloads folder via robocopy.
+Standard library only (plus robocopy.exe); prints progress to the console."""
 import csv
 import os
 import subprocess
 
-_CSV_PATH = r'C:\Users\Ethan Mesecher\Downloads\Continental\EM - Deal Numbers.csv'
-_SOURCE_DIR = r'C:\Cloud\Box\Deal Folder\Closed'
-_DEST_DIR = r'C:\Users\Ethan Mesecher\Downloads\Continental'
+_CSV_PATH = r'C:\Users\Ethan Mesecher\Downloads\Continental\EM - Deal Numbers.csv'  # input CSV: col 0 deal number, col 1 Base OGL (header row skipped)
+_SOURCE_DIR = r'C:\Cloud\Box\Deal Folder\Closed'  # Box Drive folder of closed deals, one subfolder per deal ("4375 - Name ...")
+_DEST_DIR = r'C:\Users\Ethan Mesecher\Downloads\Continental'  # where the renamed copies land
 
 # this was a one-time program
     
@@ -26,6 +31,9 @@ def read_deal_data(csv_path):
 
 
 def find_matching_folders(source_dir, deal_numbers):
+    """Maps each wanted deal number to its folder in source_dir (matched on the name's first
+    word). Returns (matches, duplicates); duplicates lists every path for deal numbers that
+    appear more than once, with the first one kept in matches."""
     matches = {}
     duplicates = {}
     for entry in os.scandir(source_dir):
@@ -43,11 +51,14 @@ def find_matching_folders(source_dir, deal_numbers):
 
 
 def make_dest_name(ogls, original_name):
+    """Destination folder name: comma-joined OGLs prefixed onto the original folder name."""
     prefix = ', '.join(ogls)
     return f'{prefix} - {original_name}'
 
 
 def main():
+    """Reads the CSV, reports duplicate/missing deal folders, then robocopies each match
+    (in deal-number order) to _DEST_DIR, skipping destinations that already exist."""
     deal_data = read_deal_data(_CSV_PATH)
     print(f'Unique deal numbers in CSV: {len(deal_data)}')
 

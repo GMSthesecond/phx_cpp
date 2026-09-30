@@ -1,3 +1,9 @@
+// main.cpp — entry point and main window for Phoenix Land Department Reporting (phxcpp.exe).
+// Builds the grid of buttons; each button either launches a Python script that sits next to
+// the exe (`py "<exeDir>\script.py"`, no console window) or opens a C++ dialog
+// (Settings -> settings.cpp, Organize -> organize.cpp, Rename -> rename.cpp).
+// Index and Map run their scripts on a background thread so the window stays responsive.
+// See docs/ARCHITECTURE.md for the full button -> script map.
 #include <windows.h>
 #include <commctrl.h>
 #include <tchar.h>
@@ -5,7 +11,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include "settings.h"
-#include "project_correlation.h"
 #include "organize.h"
 #include "rename.h"
 
@@ -18,7 +23,6 @@
 #define ID_BUTTON_SETTINGS      6
 #define ID_BUTTON_DOWNLOAD      9
 #define ID_BUTTON_STR          10
-#define ID_BUTTON_CORR         15
 #define ID_BUTTON_PPIQ         20
 #define ID_BUTTON_INDEX        21
 #define ID_BUTTON_TPP_LHPP     22
@@ -48,11 +52,11 @@
 #define ID_PROGRESS_INDEX      49
 #define ID_LABEL_INDEX_STATUS  50
 
-HFONT  g_hTitleFont   = NULL;
-HFONT  g_hButtonFont  = NULL;
-HBRUSH g_hBgBrush     = NULL;
-HBRUSH g_hYellowBrush = NULL;
-HWND   g_hwndMain     = NULL;
+HFONT  g_hTitleFont   = NULL;  // 32px bold Segoe UI for the window title; created in WM_CREATE, freed in WM_DESTROY
+HFONT  g_hButtonFont  = NULL;  // 13px Segoe UI for buttons and the Index status label
+HBRUSH g_hBgBrush     = NULL;  // light gray window background; also returned for static controls in WM_CTLCOLORSTATIC
+HBRUSH g_hYellowBrush = NULL;  // fill for unwired (owner-drawn) buttons in WM_DRAWITEM
+HWND   g_hwndMain     = NULL;  // the main window, created in WinMain
 
 // Buttons whose click handler is not implemented yet — drawn light yellow as a visual "not done" cue
 static const int g_unwiredButtonIds[] = {
@@ -61,6 +65,8 @@ static const int g_unwiredButtonIds[] = {
     ID_BUTTON_HBP_WELLS,
 };
 
+// True if id is in g_unwiredButtonIds. WM_CREATE uses this to make those buttons owner-drawn
+// so WM_DRAWITEM can paint them yellow. Remove an id from the list once its button is implemented.
 bool IsUnwiredButton(int id) {
     for (int candidate : g_unwiredButtonIds) {
         if (candidate == id) return true;
@@ -72,11 +78,13 @@ bool IsUnwiredButton(int id) {
 // show which phase is running (upload can take about a minute). Off the UI thread so
 // waiting on the scripts doesn't freeze the window; each script also shows its own
 // completion/error message box.
+// Heap-allocated by the Map click handler and deleted by RunMapThenUpload when it finishes.
 struct MapUploadThreadArgs {
-    HWND hwnd;
-    TCHAR exeDir[MAX_PATH];
+    HWND hwnd;               // main window (owner for message boxes; parent of the Map button)
+    TCHAR exeDir[MAX_PATH];  // folder containing phxcpp.exe, with trailing backslash
 };
 
+// Thread entry point started by the Map button. Disables the button while running.
 DWORD WINAPI RunMapThenUpload(LPVOID param) {
     MapUploadThreadArgs* args = (MapUploadThreadArgs*)param;
     HWND hButton = GetDlgItem(args->hwnd, ID_BUTTON_MAP);
@@ -131,16 +139,21 @@ DWORD WINAPI RunMapThenUpload(LPVOID param) {
 // Runs the three doc inventory scripts back to back (Roosevelt, Richland, Divide counties),
 // relabeling the Index button to show which county is running. Off the UI thread so waiting
 // on the scripts doesn't freeze the window; a message box reports if any script fails to launch.
+// Heap-allocated by the Index click handler and deleted by RunIndexScripts when it finishes.
 struct IndexRunThreadArgs {
-    HWND hwnd;
-    TCHAR exeDir[MAX_PATH];
+    HWND hwnd;               // main window (owner of the button, progress bar and status label)
+    TCHAR exeDir[MAX_PATH];  // folder containing phxcpp.exe, with trailing backslash
 };
 
 // Reads one doc_inventory_*.py's stdout line by line looking for the machine-readable
 // tags it prints alongside its normal human-readable output:
 //   "@PROGRESS <done> <total>"  (total is -1 when the script doesn't pre-count files)
 //   "@DONE <processed>"
-// Updates the progress bar/status label live and returns the final processed count.
+// Tags are matched anywhere in a line, because the scripts print a "\rProcessing: ..."
+// line with no newline just before each @PROGRESS, so the tag lands mid-line.
+// Updates the progress bar/status label live and returns the final processed count,
+// or -1 if the pipe or process could not be created (an error box has already been shown).
+// indeterminate = show a marquee bar instead of a percentage (used for Richland).
 static int RunOneIndexScript(HWND hwndMain, HWND hProgress, HWND hStatus,
                               const TCHAR* exeDir, const TCHAR* script,
                               const TCHAR* county, bool indeterminate) {
@@ -205,9 +218,11 @@ static int RunOneIndexScript(HWND hwndMain, HWND hProgress, HWND hStatus,
             pending.erase(0, pos + 1);
             if (line.empty()) continue;
 
-            if (line.rfind("@PROGRESS ", 0) == 0) {
+            size_t progressAt = line.find("@PROGRESS ");
+            size_t doneAt     = line.find("@DONE ");
+            if (progressAt != std::string::npos) {
                 int done = 0, total = -1;
-                sscanf(line.c_str() + 10, "%d %d", &done, &total);
+                sscanf(line.c_str() + progressAt + 10, "%d %d", &done, &total);
                 if (total > 0) {
                     SendMessage(hProgress, PBM_SETPOS, (int)(((long long)done * 100) / total), 0);
                     wsprintf(statusBuf, TEXT("%s: %d / %d"), county, done, total);
@@ -215,8 +230,8 @@ static int RunOneIndexScript(HWND hwndMain, HWND hProgress, HWND hStatus,
                     wsprintf(statusBuf, TEXT("%s: %d processed"), county, done);
                 }
                 SetWindowText(hStatus, statusBuf);
-            } else if (line.rfind("@DONE ", 0) == 0) {
-                processed = atoi(line.c_str() + 6);
+            } else if (doneAt != std::string::npos) {
+                processed = atoi(line.c_str() + doneAt + 6);
             }
         }
     }
@@ -230,6 +245,9 @@ static int RunOneIndexScript(HWND hwndMain, HWND hProgress, HWND hStatus,
     return processed;
 }
 
+// Thread entry point started by the Index button. Shows the progress bar/status label,
+// calls RunOneIndexScript once per county (stopping early if a launch fails), then hides
+// them and shows a "New documents added" summary.
 DWORD WINAPI RunIndexScripts(LPVOID param) {
     IndexRunThreadArgs* args = (IndexRunThreadArgs*)param;
     HWND hButton   = GetDlgItem(args->hwnd, ID_BUTTON_INDEX);
@@ -272,6 +290,10 @@ DWORD WINAPI RunIndexScripts(LPVOID param) {
     return 0;
 }
 
+// Positions every control in the main window: title across the top, buttons in five
+// 200px columns, Settings pinned bottom-left, Index progress bar/status pinned bottom-right.
+// Called from WM_CREATE and on every WM_SIZE. A new button needs a line here AND an
+// entry in the buttons[] table in WM_CREATE.
 void LayoutControls(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
@@ -317,11 +339,10 @@ void LayoutControls(HWND hwnd) {
 
     // Column 3
     y = y0;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CASE_MATCHUP), c3, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DECEASED),    c3, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_HBP_WELLS),   c3, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CORR),        c3, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_ORGANIZE),    c3, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CASE_MATCHUP), c3, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_RENAME),      c3, y, bw, bh, TRUE);
 
     // Column 4
@@ -334,7 +355,13 @@ void LayoutControls(HWND hwnd) {
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_MAP),         c5, y, bw, bh, TRUE);
 }
 
-// Called by Windows for every event (paint, close, etc.) that happens to the main window
+// Called by Windows for every event (paint, close, etc.) that happens to the main window.
+//   WM_CREATE         create fonts, title, all buttons, and the hidden Index progress controls
+//   WM_SIZE           re-run LayoutControls
+//   WM_CTLCOLORSTATIC give static labels the gray background
+//   WM_DRAWITEM       paint unwired (owner-drawn) buttons yellow
+//   WM_COMMAND        button click dispatch: one branch per button id
+//   WM_DESTROY        free fonts and quit the message loop
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
@@ -370,7 +397,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 { ID_BUTTON_TPP_LHPP,    TEXT("TPP-LHPP")             },
                 { ID_BUTTON_DOWNLOAD,    TEXT("Data Meeting Download")  },
                 { ID_BUTTON_COST,        TEXT("Cost to Extend")        },
-                { ID_BUTTON_CORR,        TEXT("Project Correlation")   },
                 { ID_BUTTON_SETTINGS,    TEXT("Settings")              },
                 // Column 2
                 { ID_BUTTON_ELMI,        TEXT("ELMI")                  },
@@ -383,10 +409,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 { ID_BUTTON_UNLE,        TEXT("UNLE")                  },
                 { ID_BUTTON_SL,          TEXT("SL")                    },
                 // Column 3
+                { ID_BUTTON_CASE_MATCHUP, TEXT("Case Matchup")         },
                 { ID_BUTTON_DECEASED,    TEXT("Deceased")              },
                 { ID_BUTTON_HBP_WELLS,   TEXT("HBP Wells")             },
                 { ID_BUTTON_ORGANIZE,    TEXT("Organize")              },
-                { ID_BUTTON_CASE_MATCHUP, TEXT("Case Matchup")         },
                 { ID_BUTTON_RENAME,      TEXT("Rename")                },
                 // Column 4
                 { ID_BUTTON_CLOSE_DATE,  TEXT("Close Date")            },
@@ -663,8 +689,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             } else if (LOWORD(wParam) == ID_BUTTON_RENAME) {
                 OpenRename(hwnd);
-            } else if (LOWORD(wParam) == ID_BUTTON_CORR) {
-                OpenCorrelation(hwnd);
             } else if (LOWORD(wParam) == ID_BUTTON_MAP) {
                 MapUploadThreadArgs* args = new MapUploadThreadArgs();
                 args->hwnd = hwnd;
@@ -714,12 +738,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-// Entry point for a Windows GUI application (equivalent to main())
+// Entry point for a Windows GUI application (equivalent to main()).
+// Initializes COM (needed by the Settings folder picker), loads saved folders from
+// settings.ini, registers the main and dialog window classes, then runs the message loop.
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     CoInitialize(NULL);
 
     LoadFolders();
-    LoadCompletedTasks();
 
     g_hBgBrush     = CreateSolidBrush(RGB(240, 240, 240));
     g_hYellowBrush = CreateSolidBrush(RGB(255, 255, 153));
@@ -737,7 +762,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     RegisterClassEx(&wc);
 
     RegisterSettingsClass(hInstance);     // register the settings window class defined in settings.cpp
-    RegisterCorrelationClass(hInstance);  // register the project correlation window class
     RegisterOrganizeClass(hInstance);     // register the classify dialog class used by Organize
     RegisterRenameClass(hInstance);       // register the dialog class used by Rename
 

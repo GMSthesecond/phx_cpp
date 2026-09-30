@@ -1,3 +1,11 @@
+"""Cost to Extend correction, launched by the "Cost to Extend" button.
+
+Downloads the cost-to-extend landholding report from ark.phoenixenergy.com, finds rows
+where NMA x $/acre differs from Total Cost to Extend by more than $10, writes the fixes
+to cost_to_extend.MM.DD.YYYY.csv in the [Folders] CostToExtend folder, and uploads that
+CSV back to Ark through the Data Loader as a Landholdings Update (changes live data).
+Uses ark_common and Playwright; errors are shown in a message box.
+"""
 import ctypes
 import csv
 import os
@@ -8,19 +16,26 @@ import ark_common
 
 
 def _notify(message):
+    """Show an information message box titled Cost to Extend (the only visible error channel)."""
     ctypes.windll.user32.MessageBoxW(0, message, 'Cost to Extend', 0x40)
 
 
-_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=67f413a4878d0fb2c4cf3411'
-_UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'
+_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=67f413a4878d0fb2c4cf3411'  # cost-to-extend landholdings report
+_UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'  # Ark Data Loader new-upload page
 
 
 def _to_float(s):
+    """Parse a currency/number string (commas and $ allowed); blank becomes 0.0."""
     s = s.strip().replace(',', '').replace('$', '')
     return float(s) if s else 0.0
 
 
 def _upload(page, csv_path, upload_name, dataset='Landholdings', operation='Update'):
+    """Upload csv_path through the Ark Data Loader UI as a dataset/operation job.
+
+    Clicks through the loader wizard, confirms the operation, and waits up to 2 minutes
+    for the "X of X" completion text.
+    """
     page.goto(_UPLOAD_URL)
     page.wait_for_load_state('networkidle')
 
@@ -63,6 +78,10 @@ def _upload(page, csv_path, upload_name, dataset='Landholdings', operation='Upda
 
 
 def main():
+    """Download the report, build the correction CSV, and upload it if any rows need fixing.
+
+    Always saves session.json and closes the browser, even on failure.
+    """
     out_dir = ark_common.read_folder('CostToExtend', r'C:\Users\Ethan Mesecher\Desktop\C2E')
     os.makedirs(out_dir, exist_ok=True)
 

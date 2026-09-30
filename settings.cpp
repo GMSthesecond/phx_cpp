@@ -1,17 +1,27 @@
+// Settings window: lets the user pick the output folders used by the Python scripts.
+// Opened by the main window's "Settings" button. Entry points: LoadFolders,
+// RegisterSettingsClass, OpenSettings. Reads/writes [Folders] DataMeetingDownload,
+// STRVerification, CloseDates, Maps in %APPDATA%\PhoenixLandDept\settings.ini
+// (the Python scripts read the same keys via ark_common.read_folder).
 #include "settings.h"
 #include <shlobj.h>
 
+// Window class name for the settings popup.
 static const TCHAR SETTINGS_CLASS[] = TEXT("SettingsWindow");
 
+// Main window that was disabled while settings is open; re-enabled on close.
 static HWND  s_hwndParent   = NULL;
+// The open settings window, or NULL when closed (guards against opening twice).
 static HWND  s_hwndSettings = NULL;
 
+// Current folder paths shown in the dialog and saved to [Folders]; overwritten by LoadFolders.
 // Defaults match the hardcoded paths the Python scripts previously used
 static TCHAR s_folderDMD[MAX_PATH] = TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\DMD");
 static TCHAR s_folderSTR[MAX_PATH] = TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\AOI-STR");
 static TCHAR s_folderCD[MAX_PATH]  = TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Close Date");
 static TCHAR s_folderMaps[MAX_PATH] = TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Maps");
 
+// Writes the settings.ini path into out (MAX_PATH); creates %APPDATA%\PhoenixLandDept if missing.
 static void GetIniPath(TCHAR* out) {
     TCHAR appData[MAX_PATH];
     SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, 0, appData);
@@ -21,11 +31,13 @@ static void GetIniPath(TCHAR* out) {
     wsprintf(out, TEXT("%s\\settings.ini"), dir);
 }
 
+// Loads the four [Folders] keys from settings.ini into the s_folder* globals.
+// Called once from WinMain; does not write the INI.
 void LoadFolders() {
     TCHAR iniPath[MAX_PATH];
     GetIniPath(iniPath);
     // GetPrivateProfileString writes the default into the buffer if the key is absent,
-    // so s_folderDMD/STR keep their compiled-in values on first launch.
+    // so the s_folder* globals keep their compiled-in values on first launch.
     GetPrivateProfileString(TEXT("Folders"), TEXT("DataMeetingDownload"),
         s_folderDMD, s_folderDMD, MAX_PATH, iniPath);
     GetPrivateProfileString(TEXT("Folders"), TEXT("STRVerification"),
@@ -36,6 +48,7 @@ void LoadFolders() {
         s_folderMaps, s_folderMaps, MAX_PATH, iniPath);
 }
 
+// Writes all four s_folder* paths to the [Folders] section of settings.ini.
 static void SaveFolders() {
     TCHAR iniPath[MAX_PATH];
     GetIniPath(iniPath);
@@ -71,6 +84,9 @@ static bool PickFolder(HWND hwndOwner, TCHAR* pathOut) {
     return ok;
 }
 
+// Window proc for the settings popup. WM_CREATE builds one label/path/"Change" row
+// per folder; a "Change" click runs PickFolder, updates the path label, and calls
+// SaveFolders. WM_DESTROY re-enables the parent and clears s_hwndSettings.
 static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
@@ -150,6 +166,7 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+// Registers the SettingsWindow class with SettingsProc. Called once from WinMain.
 void RegisterSettingsClass(HINSTANCE hInstance) {
     WNDCLASS wcs      = {};
     wcs.lpfnWndProc   = SettingsProc;
@@ -160,6 +177,8 @@ void RegisterSettingsClass(HINSTANCE hInstance) {
     RegisterClass(&wcs);
 }
 
+// Shows the settings popup modelessly but disables hwndParent until it closes.
+// No-op if already open. Called by the main window's Settings button.
 void OpenSettings(HWND hwndParent) {
     if (s_hwndSettings != NULL) return;
 

@@ -1,3 +1,9 @@
+"""Data Meeting Download, launched by the "Data Meeting Download" button.
+
+Logs in to ark.phoenixenergy.com with Playwright and downloads the two data-meeting
+reports into the [Folders] DataMeetingDownload folder (settings.ini), saving each as
+<name>.MM.DD.YYYY.csv. Uses ark_common for credentials, login, session.json and downloads.
+"""
 import os
 import ark_common
 from datetime import date
@@ -11,6 +17,7 @@ _REPORT_URLS = [
 
 
 def _trigger_and_save(page, out_dir, report_url):
+    """Download one report and save it to out_dir with today's date appended to its name."""
     dl = ark_common.trigger_download(page, report_url)
 
     # The server doesn't send a Content-Disposition filename, so suggested_filename
@@ -25,6 +32,7 @@ def _trigger_and_save(page, out_dir, report_url):
 
 
 def main():
+    """Resolve the output folder, log in if needed, download both reports and save the session."""
     out_dir = ark_common.read_folder('DataMeetingDownload', r'C:\Users\Ethan Mesecher\Desktop\DMD')
     os.makedirs(out_dir, exist_ok=True)
 

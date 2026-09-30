@@ -1,3 +1,9 @@
+"""Pulls deals that closed on the previous business day from Ark and uploads their Close Dates.
+Launched by the "Close Date" button. Logs into Ark (ark_common credentials/session), downloads
+the close-date report, keeps rows that closed yesterday (Friday-Sunday on Mondays), writes
+close_dates.<mm.dd.yyyy>.csv to the [Folders] CloseDates folder, then uploads it through the
+Ark data loader as a Landholdings Update. Depends on playwright; errors shown in a message box.
+"""
 import ctypes
 import csv
 import os
@@ -8,20 +14,24 @@ import ark_common
 
 
 def _notify(message):
+    """Show an info message box titled "Close Dates"."""
     ctypes.windll.user32.MessageBoxW(0, message, 'Close Dates', 0x40)
 
-_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=c348d047aeebd9028494bf6c'
-_UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'
+_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=c348d047aeebd9028494bf6c'  # Ark report listing record Id and Close Date
+_UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'  # Ark data-loader new-upload page
 
 
-def _target_date():
+def _target_dates():
+    """Return the set of close dates to pull: yesterday, or Friday through Sunday when run
+    on a Monday (so weekend closes aren't missed). Holidays are not handled."""
     today = date.today()
-    if today.weekday() == 0:  # Monday — use previous Friday
-        return today - timedelta(days=3)
-    return today - timedelta(days=1)
+    if today.weekday() == 0:  # Monday — previous Friday, Saturday and Sunday
+        return {today - timedelta(days=n) for n in (1, 2, 3)}
+    return {today - timedelta(days=1)}
 
 
 def _parse_date(s):
+    """Parse a report date in one of several formats; raises ValueError if none match."""
     for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d'):
         try:
             return datetime.strptime(s, fmt).date()
@@ -31,6 +41,9 @@ def _parse_date(s):
 
 
 def _upload(page, csv_path, upload_name, dataset='Landholdings', operation='Update'):
+    """Drive the Ark data loader to upload csv_path as the given dataset/operation.
+    Blocks until the "X of X" completion text appears (up to 2 minutes).
+    Duplicated in non_hbp_mi.py."""
     page.goto(_UPLOAD_URL)
     page.wait_for_load_state('networkidle')
 
@@ -73,11 +86,13 @@ def _upload(page, csv_path, upload_name, dataset='Landholdings', operation='Upda
 
 
 def main():
+    """Log in, download the report, filter to the target close dates (skipping Deferred
+    deals), write the CSV, and upload it. Always saves the browser session afterward."""
     out_dir = ark_common.read_folder('CloseDates', r'C:\Users\Ethan Mesecher\Desktop\Close Date')
     os.makedirs(out_dir, exist_ok=True)
 
     username, password = ark_common.read_credentials()
-    target = _target_date()
+    targets = _target_dates()
     today_str = date.today().strftime('%m.%d.%Y')
     rows = []
 
@@ -112,7 +127,7 @@ def main():
                         close_date = _parse_date(close_date_str)
                     except ValueError:
                         continue
-                    if close_date == target:
+                    if close_date in targets:
                         rows.append((record_id, close_date_str))
 
             # Write filtered CSV before upload (path needed by _upload)

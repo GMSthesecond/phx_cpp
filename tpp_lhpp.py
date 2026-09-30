@@ -1,3 +1,11 @@
+"""TPP vs. LHPP price comparison, launched by the "TPP-LHPP" button.
+
+Downloads the Offers and LandHoldingTransactions reports from ark.phoenixenergy.com into
+the TPP-LHPP folder, sums LHT values per offer, and writes offers whose Total Purchase
+Price differs from their LHT total by more than $1 to PHX_Price_Paid_Export.xlsx.
+Uses ark_common (credentials, login, session.json), Playwright and openpyxl; errors are
+shown in a message box since the launcher gives the script no console.
+"""
 import ctypes
 import csv
 import os
@@ -9,9 +17,11 @@ from openpyxl.cell import WriteOnlyCell
 
 
 def _notify(message):
+    """Show an information message box titled TPP-LHPP (the only visible error channel)."""
     ctypes.windll.user32.MessageBoxW(0, message, 'TPP-LHPP', 0x40)
 
 
+# Hardcoded download/output folder (not configurable from the Settings window)
 _OUT_DIR = r"C:\Users\Ethan Mesecher\Desktop\TPP-LHPP"
 
 # (url, generation_wait_ms) — the LandHoldingTransactions report has ~350k+ rows and can take
@@ -23,14 +33,19 @@ _REPORT_URLS = [
     ('https://ark.phoenixenergy.com/report?recordId=689257e3d2b183ad4f221902', 120_000),  # LandHoldingTransactions — large, slow to generate
 ]
 
-_OFFERS_FILENAME = 'Offers_Report_For_Price_Comparison_EM.csv'
-_LHT_FILENAME = 'LandHoldingTransactions_For_Price_Comparison_EM.csv'
-_EXPORT_FILENAME = 'PHX_Price_Paid_Export.xlsx'
+_OFFERS_FILENAME = 'Offers_Report_For_Price_Comparison_EM.csv'  # expected name of the downloaded Offers report
+_LHT_FILENAME = 'LandHoldingTransactions_For_Price_Comparison_EM.csv'  # expected name of the downloaded LHT report
+_EXPORT_FILENAME = 'PHX_Price_Paid_Export.xlsx'  # mismatch workbook written to _OUT_DIR
 
+# Highlight applied to every cell of an exported mismatch row
 _YELLOW_FILL = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
 
 
 def _download_files():
+    """Log in to Ark and download both _REPORT_URLS reports into _OUT_DIR.
+
+    Waits 30s between downloads; always saves session.json and closes the browser.
+    """
     os.makedirs(_OUT_DIR, exist_ok=True)
     username, password = ark_common.read_credentials()
 
@@ -63,6 +78,7 @@ def _download_files():
 
 
 def _find_file(filename):
+    """Return the path of filename in _OUT_DIR (case-insensitive match), or None."""
     for name in os.listdir(_OUT_DIR):
         if name.lower() == filename.lower():
             return os.path.join(_OUT_DIR, name)
@@ -70,6 +86,10 @@ def _find_file(filename):
 
 
 def _process_offers(offers):
+    """Fill offers (dict keyed by offer Id) with TPP, status and close date from the Offers CSV.
+
+    Silently does nothing if the Offers file isn't found.
+    """
     path = _find_file(_OFFERS_FILENAME)
     if not path:
         return
@@ -98,6 +118,10 @@ def _process_offers(offers):
 
 
 def _process_lht(offers):
+    """Sum LHT values per offer Id and store them as lht_tpp on offers already in the dict.
+
+    Silently does nothing if the LHT file isn't found.
+    """
     path = _find_file(_LHT_FILENAME)
     if not path:
         return
@@ -124,6 +148,7 @@ def _process_lht(offers):
 
 
 def _export(offers):
+    """Write offers whose LHT total and TPP differ by more than $1 to the yellow-highlighted export workbook."""
     export_path = os.path.join(_OUT_DIR, _EXPORT_FILENAME)
 
     # write_only mode streams rows instead of building an in-memory cell grid —
@@ -154,6 +179,7 @@ def _export(offers):
 
 
 def main():
+    """Download both reports, merge offers with their LHT totals, and export the mismatches."""
     _download_files()
 
     offers = {}

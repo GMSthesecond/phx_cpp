@@ -1,3 +1,8 @@
+// Organize: personal-finance CSV categorizer. Opened by the main window's "Organize" button.
+// Entry points: RegisterOrganizeClass, OpenOrganize. Reads Desktop\Organization\Data.CSV,
+// prompts (classify dialog) for unmatched descriptions, writes Organized.CSV (one row per day).
+// Rules and scrub words persist in %APPDATA%\PhoenixLandDept\organize_rules.ini
+// ([Rules] SNIPPET=colIndex, [ScrubWords] WORD=1, [Meta] ColumnSchema).
 #include "organize.h"
 #include <shlobj.h>
 #include <wchar.h>
@@ -10,19 +15,23 @@
 
 static const int NUM_COLS  = 15; // exported columns
 static const int IGNORE_COL = 15; // stored in rules but never written to output
+// Category names, in output order; index = column index stored in rules.
 static const wchar_t* const COLS[NUM_COLS] = {
     L"Income", L"Mortgage", L"Bills", L"Health", L"Groceries",
     L"Cats", L"Transport", L"Takeout", L"House", L"Travel",
     L"Wyn", L"Ruby", L"Briar", L"Mutual Aid", L"Savings"
 };
 
+// Hardcoded input (bank export) and output paths; not taken from settings.ini.
 static const wchar_t* DATA_PATH   = L"C:\\Users\\Ethan Mesecher\\Desktop\\Organization\\Data.CSV";
 static const wchar_t* OUTPUT_PATH = L"C:\\Users\\Ethan Mesecher\\Desktop\\Organization\\Organized.CSV";
 
 // ─── Rules (uppercased description → column index) ────────────────────────────
 
+// In-memory copy of [Rules]; filled by LoadRules, added to by SaveRule.
 static std::map<std::wstring, int> g_rules;
 
+// Writes the organize_rules.ini path into out (MAX_PATH); creates %APPDATA%\PhoenixLandDept if missing.
 static void GetRulesPath(wchar_t* out) {
     wchar_t appData[MAX_PATH];
     SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, 0, appData);
@@ -54,6 +63,8 @@ static const int OLD_TO_NEW_COL_V1[14] = {
 };
 
 // One-time migration of rules saved under the pre-Briar column layout.
+// If [Meta] ColumnSchema < 2, rewrites every [Rules] value via OLD_TO_NEW_COL_V1
+// and sets ColumnSchema=2. Called by LoadRules.
 static void MigrateRuleColumnsIfNeeded(const wchar_t* path) {
     wchar_t schema[16] = {};
     GetPrivateProfileString(L"Meta", L"ColumnSchema", L"1", schema, ARRAYSIZE(schema), path);
@@ -74,6 +85,8 @@ static void MigrateRuleColumnsIfNeeded(const wchar_t* path) {
     WritePrivateProfileString(L"Meta", L"ColumnSchema", L"2", path);
 }
 
+// Replaces g_rules with the [Rules] section of organize_rules.ini (after migration).
+// Keeps indices 0..IGNORE_COL: category rules plus Ignore rules (which RunOrganize skips silently).
 static void LoadRules() {
     g_rules.clear();
     wchar_t path[MAX_PATH];
@@ -87,11 +100,12 @@ static void LoadRules() {
         if (!eq) continue;
         std::wstring key(p, eq - p);
         int col = _wtoi(eq + 1);
-        if (col >= 0 && col < NUM_COLS)
+        if (col >= 0 && col <= IGNORE_COL)
             g_rules[key] = col;
     }
 }
 
+// Saves snippet desc -> col to [Rules] in organize_rules.ini and to g_rules.
 static void SaveRule(const std::wstring& desc, int col) {
     wchar_t path[MAX_PATH], val[8];
     GetRulesPath(path);
@@ -102,23 +116,30 @@ static void SaveRule(const std::wstring& desc, int col) {
 
 // ─── Classify dialog ──────────────────────────────────────────────────────────
 
+// Control IDs for the classify dialog.
 #define ID_CL_COMBO   501
 #define ID_CL_OK      502
 #define ID_CL_SKIP    503
 #define ID_CL_SNIPPET 504
 
+// State shared between ClassifyTx and ClassifyProc for one transaction prompt.
 struct ClassifyParams {
     const wchar_t* date;
     const wchar_t* desc;
     const wchar_t* amount;
-    int     result;       // -1 = skip, 0-12 = column index
-    bool    done;
+    int     result;       // -1 = skip, 0-14 = column index, 15 = Ignore
+    bool    done;         // set by ClassifyProc to end ClassifyTx's message loop
     wchar_t snippet[512]; // pattern to save; user edits this down from the full description
 };
 
+// Params of the classify dialog currently open (nullptr when none); written by ClassifyProc.
 static ClassifyParams* g_cp = nullptr;
+// Window class name for the classify dialog.
 static const wchar_t CLASSIFY_CLS[] = L"OrgClassifyDlg";
 
+// Window proc for the classify dialog: shows date/description/amount, a snippet edit
+// box, a category combo (COLS + "Ignore"), Confirm and Skip. Confirm stores the combo
+// index and snippet in g_cp; Skip/close store -1. Either sets g_cp->done and destroys.
 static LRESULT CALLBACK ClassifyProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
@@ -187,7 +208,7 @@ static LRESULT CALLBACK ClassifyProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
 }
 
 // Shows the classify dialog modally.
-// Returns the chosen column index (0-12), or -1 to skip.
+// Returns the chosen column index (0-14, or 15 = Ignore), or -1 to skip.
 // On a confirmed choice, snippetOut receives the pattern the user typed.
 static int ClassifyTx(HWND hwndParent, const wchar_t* date, const wchar_t* desc,
                       const wchar_t* amount, wchar_t* snippetOut, int snippetMax) {
@@ -233,6 +254,7 @@ static int ClassifyTx(HWND hwndParent, const wchar_t* date, const wchar_t* desc,
 
 // ─── String helpers ───────────────────────────────────────────────────────────
 
+// Returns s without leading/trailing spaces, tabs, CR, LF.
 static std::wstring Trim(const std::wstring& s) {
     size_t a = s.find_first_not_of(L" \t\r\n");
     if (a == std::wstring::npos) return {};
@@ -240,6 +262,7 @@ static std::wstring Trim(const std::wstring& s) {
     return s.substr(a, b - a + 1);
 }
 
+// Returns an uppercased copy of s.
 static std::wstring ToUpper(std::wstring s) {
     for (auto& c : s) c = (wchar_t)towupper(c);
     return s;
@@ -267,8 +290,11 @@ static std::wstring TitleCase(std::wstring s) {
 // load, so adding a new entry here and rebuilding is enough to pick it up —
 // it isn't limited to a one-time seed of a brand-new INI.
 
+// Uppercased scrub words from [ScrubWords]; filled by LoadScrubWords, used by ScrubDesc.
 static std::vector<std::wstring> g_scrubWords;
 
+// Loads [ScrubWords] keys into g_scrubWords, then writes any missing built-in
+// default word to the INI (as WORD=1) and appends it to the list.
 static void LoadScrubWords() {
     g_scrubWords.clear();
     wchar_t path[MAX_PATH];
@@ -319,7 +345,8 @@ static std::wstring EscapeRegex(const std::wstring& s) {
 // "023860430ACHPAY", "ST-R3I5X0S2M3W5"), and any manually configured scrub
 // words (case-insensitive, whole word) — then collapses any resulting runs
 // of whitespace down to one space and title-cases the result ("STARBUCKS
-// COFFEE" -> "Starbucks Coffee").
+// COFFEE" -> "Starbucks Coffee"). Falls back to the original description if
+// everything was stripped. Called by RunOrganize for each note entry.
 static std::wstring ScrubDesc(const std::wstring& desc) {
     std::wstring s = desc;
 
@@ -405,15 +432,19 @@ static std::vector<std::wstring> SplitCSV(const std::wstring& line) {
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 
+// Calendar date (year, month 1-12, day 1-31).
 struct Date { int y, m, d; };
 
+// True if date a is strictly before b.
 static bool DateLt(const Date& a, const Date& b) {
     if (a.y != b.y) return a.y < b.y;
     if (a.m != b.m) return a.m < b.m;
     return a.d < b.d;
 }
+// True if date a is on or before b.
 static bool DateLe(const Date& a, const Date& b) { return !DateLt(b, a); }
 
+// Number of days in month m of year y, accounting for leap years.
 static int DaysInMonth(int y, int m) {
     static const int t[] = { 0,31,28,31,30,31,30,31,31,30,31,30,31 };
     int d = t[m];
@@ -421,12 +452,14 @@ static int DaysInMonth(int y, int m) {
     return d;
 }
 
+// Returns the calendar day after d.
 static Date NextDay(Date d) {
     if (++d.d > DaysInMonth(d.y, d.m)) { d.d = 1; if (++d.m > 12) { d.m = 1; d.y++; } }
     return d;
 }
 
 // Accepts "M/D/YYYY", "MM/DD/YYYY", and "YYYY-MM-DD".
+// Returns false if the text doesn't parse or fails a basic range check.
 static bool ParseDate(const std::wstring& s, Date& out) {
     std::wstring t = Trim(s);
     if (t.size() >= 10 && t[4] == L'-' && t[7] == L'-') {
@@ -445,10 +478,12 @@ static bool ParseDate(const std::wstring& s, Date& out) {
     return out.y > 0 && out.m >= 1 && out.m <= 12 && out.d >= 1 && out.d <= 31;
 }
 
+// Sortable "YYYY-MM-DD" key used for the per-day map.
 static std::wstring DateKey(const Date& d) {
     wchar_t b[16]; wsprintf(b, L"%04d-%02d-%02d", d.y, d.m, d.d); return b;
 }
 
+// "M/D/YYYY" text written to the Date column of Organized.CSV.
 static std::wstring DateDisplay(const Date& d) {
     wchar_t b[16]; wsprintf(b, L"%d/%d/%04d", d.m, d.d, d.y); return b;
 }
@@ -468,6 +503,7 @@ static double ParseAmount(const std::wstring& s) {
     return neg ? -v : v;
 }
 
+// Formats v with two decimals ("-12.50").
 // Returns empty string for zero (leaves the cell blank in the output).
 static std::wstring FmtAmount(double v) {
     if (v == 0.0) return L"";
@@ -488,7 +524,7 @@ static std::wstring EscCSV(const std::wstring& s) {
 // ─── Rule matching ────────────────────────────────────────────────────────────
 
 // Returns the column index if any saved snippet is a substring of the uppercased
-// description, or -1 if no rule matches.
+// description, or -1 if no rule matches. First match in map (alphabetical) order wins.
 static int FindRule(const std::wstring& upperDesc) {
     for (auto& kv : g_rules) {
         if (!kv.first.empty() && upperDesc.find(kv.first) != std::wstring::npos)
@@ -499,12 +535,18 @@ static int FindRule(const std::wstring& upperDesc) {
 
 // ─── Main organize logic ──────────────────────────────────────────────────────
 
+// Accumulated totals and notes for one calendar day of output.
 struct DayRow {
-    double       c[NUM_COLS];
+    double       c[NUM_COLS]; // per-column summed amount
     std::wstring notes[NUM_COLS]; // per-column: "Desc $amt; Desc $amt"
     DayRow() { for (int i = 0; i < NUM_COLS; i++) c[i] = 0.0; }
 };
 
+// Does the whole Organize job: loads rules/scrub words, parses Data.CSV (columns found
+// by header: Posting/Post Date, Description, Amount), categorizes each transaction
+// (positive = Income, else FindRule, else ClassifyTx prompt + SaveRule), sums amounts
+// and scrubbed notes per day, and writes Organized.CSV (UTF-8 BOM) covering every day
+// of the spanned months. Shows MessageBoxes for errors and completion.
 static void RunOrganize(HWND hwndParent) {
     LoadRules();
     LoadScrubWords();
@@ -694,6 +736,7 @@ static void RunOrganize(HWND hwndParent) {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+// Registers the OrgClassifyDlg class with ClassifyProc. Called once from WinMain.
 void RegisterOrganizeClass(HINSTANCE hInstance) {
     WNDCLASS wc      = {};
     wc.lpfnWndProc   = ClassifyProc;
@@ -704,6 +747,7 @@ void RegisterOrganizeClass(HINSTANCE hInstance) {
     RegisterClass(&wc);
 }
 
+// Main-window "Organize" button handler; runs RunOrganize synchronously.
 void OpenOrganize(HWND hwndParent) {
     RunOrganize(hwndParent);
 }

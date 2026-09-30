@@ -1,3 +1,10 @@
+"""Uploads map_builder's per-operator shapefile zips to Enverus drillinginfo (DI) as map layers.
+Launched by the "Map" button (step 2, after map_builder.py finishes).
+Reads every "<YYYY.MM.DD>. <Operator>.zip" in the Maps folder ([Folders] Maps), Enverus login
+from [EnverusCredentials], and operator_colors.json. Logs in headless, uploads each zip, sets its
+fill color, adds it to the view, and saves the "Phoenix Units" workspace; updates operator_colors.json.
+Successfully uploaded zips are moved to the Uploaded subfolder of Maps so later runs don't upload them again.
+Depends on Playwright (Chromium) plus ark_common and operator_colors."""
 import ctypes
 import glob
 import os
@@ -8,34 +15,40 @@ from playwright.sync_api import sync_playwright
 import ark_common
 import operator_colors as opcolors
 
-_MAPS_DIR = ark_common.read_folder('Maps', r'C:\Users\Ethan Mesecher\Desktop\Maps')
+_MAPS_DIR = ark_common.read_folder('Maps', r'C:\Users\Ethan Mesecher\Desktop\Maps')  # where map_builder leaves its zips
+_UPLOADED_DIR = os.path.join(_MAPS_DIR, 'Uploaded')  # zips move here after a successful upload + workspace save
 
+# Enverus Auth0 universal-login page (the state= token is baked in from a captured URL).
 _LOGIN_URL = (
     'https://login.auth.enverus.com/u/login/identifier?state=hKFo2SByUWZJb2JjcW9XX2F6TV90'
     'LTNueTI0Wmd6V0RuUmVwTqFur3VuaXZlcnNhbC1sb2dpbqN0aWTZIG9ON0tac3pLSHVaUW9RT1RrcEhtYkxqMmFS'
     'YjZwcmtno2NpZNkgZk1xTDZmTFE2eDFPQ3B5dER2Y3RRN0t1RkFneFVrSEE#/default'
 )
-_APP_URL = 'https://app.enverus.com/production/'
+_APP_URL = 'https://app.enverus.com/production/'  # DI production map app where layers are managed
 
 
 def _notify(message):
+    """Shows a blocking "Map Uploader" info message box (the only UI, since there is no console)."""
     ctypes.windll.user32.MessageBoxW(0, message, 'Map Uploader', 0x40)
 
 
 def _zip_layer_name(zip_path):
+    """Layer name DI will give an uploaded zip: its base filename without extension."""
     # DI names the saved layer after the zip's own base filename (extension stripped).
     return os.path.splitext(os.path.basename(zip_path))[0]
 
 
-_NAME_PATTERN = re.compile(r'^\d{4}\.\d{2}\.\d{2}\. (.+)$')
+_NAME_PATTERN = re.compile(r'^\d{4}\.\d{2}\.\d{2}\. (.+)$')  # map_builder's "YYYY.MM.DD. Operator" naming; group 1 = operator
 
 
 def _operator_from_layer_name(layer_name):
+    """Strips the date prefix from a layer name to get the operator (whole name if it doesn't match)."""
     m = _NAME_PATTERN.match(layer_name)
     return m.group(1) if m else layer_name
 
 
 def _login(page):
+    """Signs in to Enverus with the [EnverusCredentials] identifier/password and waits for the gallery page."""
     identifier, password = ark_common.read_enverus_credentials()
     page.goto(_LOGIN_URL, wait_until='networkidle', timeout=30000)
     page.fill('input[name="username"]', identifier)
@@ -47,6 +60,7 @@ def _login(page):
 
 
 def _open_map_layers(page):
+    """Opens the DI production map and makes sure the Layer Manager panel is showing."""
     page.goto(_APP_URL, wait_until='networkidle', timeout=45_000)
     page.wait_for_timeout(3000)
     # Whether the panel starts open or closed depends on the workspace's own saved state,
@@ -57,6 +71,9 @@ def _open_map_layers(page):
 
 
 def _set_fill_color(page, row, rgb):
+    """Sets a layer row's Fill Color to rgb via the custom-color RGB popup, then closes the
+    popup and swatch panel so they can't intercept later clicks. Raises RuntimeError if the
+    popup doesn't show exactly 3 RGB inputs."""
     # Each row has its own "Fill Color" and "Line Color" pickers (Angular <color-picker>
     # components); scoping by the title="Fill Color" section keeps us out of Line Color's
     # near-identical markup.
@@ -93,6 +110,8 @@ def _set_fill_color(page, row, rgb):
 
 
 def _upload_one(page, zip_path, rgb):
+    """Uploads one zip through ADD LAYERS > UPLOAD SHAPEFILE, finds its new row, colors it,
+    ticks its checkbox (retrying up to 5 times) and clicks APPLY. Raises RuntimeError on failure."""
     layer_name = _zip_layer_name(zip_path)
 
     page.get_by_text('ADD LAYERS', exact=False).click()
@@ -148,10 +167,12 @@ def _upload_one(page, zip_path, rgb):
 # nothing sticks past the current tab unless it's saved into a real named workspace.
 # This one is created once (via SAVE AS, marked as the account's default) and reused
 # on every later run via the now-enabled plain SAVE.
-_WORKSPACE_NAME = 'Phoenix Units'
+_WORKSPACE_NAME = 'Phoenix Units'  # named DI workspace the applied layers are saved into
 
 
 def _save_workspace(page):
+    """Saves the current view: plain SAVE if already in _WORKSPACE_NAME, otherwise SAVE AS
+    that name and mark it as the account's default workspace."""
     header = page.locator('span.dropdown-selected-item-title')
     current_name = header.get_attribute('title') if header.count() > 0 else None
 
@@ -170,6 +191,10 @@ def _save_workspace(page):
 
 
 def main():
+    """Collects the dated zips in the Maps folder, loads (and red-scrubs) operator colors,
+    logs in, uploads each zip with its operator's color, saves the workspace if anything
+    uploaded, moves the uploaded zips to _UPLOADED_DIR, persists colors, and shows a
+    summary message box. Zips that failed stay in the Maps folder for the next run."""
     zips = [
         z for z in glob.glob(os.path.join(_MAPS_DIR, '*.zip'))
         if _NAME_PATTERN.match(_zip_layer_name(z))
@@ -183,7 +208,7 @@ def main():
     if rescrubbed:
         opcolors.save_colors(_MAPS_DIR, colors)
 
-    uploaded, errors = [], []
+    uploaded, uploaded_paths, errors = [], [], []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -198,6 +223,7 @@ def main():
             try:
                 _upload_one(page, zip_path, rgb)
                 uploaded.append((operator, rgb))
+                uploaded_paths.append(zip_path)
             except Exception as e:
                 errors.append(f'{operator}: {e}')
 
@@ -205,6 +231,15 @@ def main():
             _save_workspace(page)
 
         browser.close()
+
+    # Only after the workspace saved, so a failed save leaves the zips in place to retry
+    if uploaded_paths:
+        os.makedirs(_UPLOADED_DIR, exist_ok=True)
+        for zip_path in uploaded_paths:
+            try:
+                os.replace(zip_path, os.path.join(_UPLOADED_DIR, os.path.basename(zip_path)))
+            except OSError as e:
+                errors.append(f'Could not move {os.path.basename(zip_path)} to Uploaded: {e}')
 
     opcolors.save_colors(_MAPS_DIR, colors)
 

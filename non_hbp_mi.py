@@ -1,3 +1,9 @@
+"""Stamps today's date on every unit in an Ark report and re-uploads it (Case Update).
+Launched by the "Case Update" button. Logs into Ark (ark_common credentials/session),
+downloads the report, overwrites column 2 with today's date and appends a "Last updated"
+column, writes non_hbp_mi.<mm.dd.yyyy>.csv to the [Folders] NonHBPMI folder, then uploads
+it through the Ark data loader as a Units Update. Depends on playwright; no error dialog.
+"""
 import csv
 import os
 import re
@@ -5,11 +11,14 @@ from datetime import date
 
 import ark_common
 
-_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=391d699d4edefdf6073d9e8f'
-_UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'
+_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=391d699d4edefdf6073d9e8f'  # Ark report of units to stamp (non-HBP MI units, per the filename)
+_UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'  # Ark data-loader new-upload page
 
 
 def _upload(page, csv_path, upload_name, dataset='Units', operation='Update'):
+    """Drive the Ark data loader to upload csv_path as the given dataset/operation.
+    Blocks until the "X of X" completion text appears (up to 2 minutes).
+    Duplicated in close_dates.py."""
     page.goto(_UPLOAD_URL)
     page.wait_for_load_state('networkidle')
 
@@ -52,6 +61,8 @@ def _upload(page, csv_path, upload_name, dataset='Units', operation='Update'):
 
 
 def main():
+    """Log in, download the report, set each row's date column to today, write the CSV,
+    upload it, and save the browser session (only if every step succeeds)."""
     out_dir = ark_common.read_folder(
         'NonHBPMI', r'C:\Users\Ethan Mesecher\Desktop\Case Update'
     )

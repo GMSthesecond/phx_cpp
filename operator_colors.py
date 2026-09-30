@@ -1,3 +1,7 @@
+"""Stable per-operator fill colors for the drillinginfo map layers.
+Imported by map_uploader (not launched directly). Reads/writes operator_colors.json in the
+Maps folder so an operator keeps the same color across runs; hands out a curated palette
+first, then golden-angle generated colors, always avoiding reds (DI draws borders in red)."""
 import colorsys
 import json
 import os
@@ -16,6 +20,7 @@ _PALETTE = [
 
 
 def _color_file(maps_dir):
+    """Path of the persisted operator -> color JSON inside maps_dir."""
     return os.path.join(maps_dir, 'operator_colors.json')
 
 
@@ -30,6 +35,7 @@ def load_colors(maps_dir):
 
 
 def save_colors(maps_dir, colors):
+    """Writes the {operator: (r, g, b)} map back to operator_colors.json (sorted, indented)."""
     with open(_color_file(maps_dir), 'w') as f:
         json.dump({k: list(v) for k, v in colors.items()}, f, indent=2, sort_keys=True)
 
@@ -56,6 +62,7 @@ def _generate_color(index):
 
 
 def _pick_unused_color(used):
+    """First palette color not in used, else the first unused generated color."""
     for c in _PALETTE:
         if c not in used:
             return c

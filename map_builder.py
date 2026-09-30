@@ -1,3 +1,9 @@
+"""Builds one zipped polygon shapefile per operator from Units.csv, for upload to drillinginfo.
+Launched by the "Map" button (step 1; main.cpp then runs map_uploader.py).
+Reads Units.csv in the Maps folder ([Folders] Maps) and resolves each unit's STRs (with optional
+aliquot parts) to section/quarter-quarter geometry via BLM's PLSS ArcGIS REST service.
+Writes "<YYYY.MM.DD>. <Operator>.zip" (.shp/.shx/.dbf/.prj/.cpg) into the Maps folder and shows
+a summary message box. Depends on requests, pyshp (shapefile) and shapely."""
 import ctypes
 import csv
 import os
@@ -13,9 +19,11 @@ from shapely.ops import unary_union
 
 import ark_common
 
-_MAPS_DIR = ark_common.read_folder('Maps', r'C:\Users\Ethan Mesecher\Desktop\Maps')
-_UNITS_CSV = os.path.join(_MAPS_DIR, 'Units.csv')
+_MAPS_DIR = ark_common.read_folder('Maps', r'C:\Users\Ethan Mesecher\Desktop\Maps')  # input/output folder ([Folders] Maps), shared with map_uploader
+_UNITS_CSV = os.path.join(_MAPS_DIR, 'Units.csv')  # input: one row per unit (Unit #, STRs, State, Operator, ...)
 
+# BLM national PLSS (CadNSDI) layers: 1 = townships (used for meridian lookup), 2 = sections,
+# 3 = intersected section subdivisions (quarter-quarters and government lots).
 _BLM_TOWNSHIP_URL    = 'https://gis.blm.gov/arcgis/rest/services/Cadastral/BLM_Natl_PLSS_CadNSDI/MapServer/1/query'
 _BLM_SECTION_URL     = 'https://gis.blm.gov/arcgis/rest/services/Cadastral/BLM_Natl_PLSS_CadNSDI/MapServer/2/query'
 _BLM_INTERSECTED_URL = 'https://gis.blm.gov/arcgis/rest/services/Cadastral/BLM_Natl_PLSS_CadNSDI/MapServer/3/query'
@@ -24,8 +32,9 @@ _BLM_INTERSECTED_URL = 'https://gis.blm.gov/arcgis/rest/services/Cadastral/BLM_N
 # geometry directly, so halves and quarters are built by combining those rather than by
 # bisecting a section polygon ourselves — safer, since sections aren't always perfect
 # squares (correction lines, government lots, etc).
-_QUARTERS = ('NE', 'NW', 'SE', 'SW')
-_HALF_TO_QUARTERS = {'N2': ('NE', 'NW'), 'S2': ('SE', 'SW'), 'E2': ('NE', 'SE'), 'W2': ('NW', 'SW')}
+_QUARTERS = ('NE', 'NW', 'SE', 'SW')  # quarter-section codes
+_HALF_TO_QUARTERS = {'N2': ('NE', 'NW'), 'S2': ('SE', 'SW'), 'E2': ('NE', 'SE'), 'W2': ('NW', 'SW')}  # half -> its two quarters
+# Every accepted aliquot token: 4 quarters, 4 halves, and 16 quarter-quarters (e.g. 'NENE').
 _VALID_ALIQUOTS = set(_QUARTERS) | set(_HALF_TO_QUARTERS) | {inner + outer for inner in _QUARTERS for outer in _QUARTERS}
 
 
@@ -45,10 +54,12 @@ def _qq_labels_for(aliquot):
 # meridian, and an STR alone doesn't say which one it belongs to. Rather than hardcoding
 # a guess per state, the meridians actually used in a given state are looked up from BLM
 # and each is tried in turn until one has data for the STR.
-_state_meridian_cache = {}
+_state_meridian_cache = {}  # {state_abbr: [PRINMERCD, ...]} memo for _meridians_for_state
 
 
 def _meridians_for_state(state_abbr):
+    """Returns the BLM principal-meridian codes used in a state (one distinct-values query
+    to the township layer, cached per run)."""
     if state_abbr not in _state_meridian_cache:
         params = {
             'f': 'json',
@@ -64,6 +75,8 @@ def _meridians_for_state(state_abbr):
         _state_meridian_cache[state_abbr] = codes
     return _state_meridian_cache[state_abbr]
 
+# One STR token: optional leading aliquot, section-township(N/S)-range(E/W), optional
+# trailing aliquot, e.g. 'N2-14-23N-58E' or '11-3S-2W-NENE'.
 _STR_RE = re.compile(
     r'^\s*(?:([A-Za-z0-9]{2,4})-)?(\d{1,2})-(\d{1,3})([NS])-(\d{1,3})([EW])(?:-([A-Za-z0-9]{2,4}))?\s*$',
     re.IGNORECASE
@@ -83,6 +96,7 @@ _PRJ_WKT = (
 
 
 def _notify(message):
+    """Shows a blocking "Map Builder" info message box (the only UI, since there is no console)."""
     ctypes.windll.user32.MessageBoxW(0, message, 'Map Builder', 0x40)
 
 
@@ -92,6 +106,7 @@ _SERIAL_DATE_EPOCH = date(1899, 12, 30)
 
 
 def _parse_serial_date(value):
+    """Converts a spreadsheet serial day number to a date; None if blank or not an integer."""
     value = (value or '').strip()
     if not value:
         return None
@@ -102,6 +117,7 @@ def _parse_serial_date(value):
 
 
 def _parse_int(value):
+    """int(value) after stripping, or None if blank/unparseable."""
     value = (value or '').strip()
     try:
         return int(value)
@@ -109,18 +125,22 @@ def _parse_int(value):
         return None
 
 
-_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')  # characters Windows forbids in file names
 
 
 def _sanitize_filename(name):
+    """Replaces Windows-illegal characters with '_' and trims trailing spaces/dots (for operator names)."""
     return _INVALID_FILENAME_CHARS.sub('_', name).strip(' .')
 
 
 def _row_label(row):
+    """Human-readable name for a CSV row in error messages: unit #, else order #."""
     return row['unit_no'] or row['order_no'] or '(unlabeled row)'
 
 
 def _frstdivid(base, prinmercd):
+    """Builds BLM's FRSTDIVID section id from a (state, section, twp_no, twp_dir, rng_no,
+    rng_dir) tuple and a meridian code."""
     # BLM's section id is deterministic from the STR, e.g. section 32 of T3S R2W under
     # Utah's Salt Lake Meridian becomes "UT260030S0020W0SN320" — no lookup needed, just
     # zero-padded assembly. The '0' after each zero-padded number is BLM's
@@ -345,7 +365,7 @@ def _resolve_unit(state_abbr, components, meridian_results):
     that, the remaining STRs are matched to whichever other meridian's candidate polygon
     sits closest to the STRs that already resolved, as long as it's close enough
     (_MAX_NEIGHBOR_METERS) to plausibly be part of the same unit rather than a
-    same-numbered township somewhere else entirely."""
+    same-numbered township somewhere else entirely. Returns (polygons, missing_components)."""
     meridians = _meridians_for_state(state_abbr)
 
     coverage = {
@@ -415,6 +435,8 @@ _FIELD_SPECS = [
 
 
 def _build_shapefile(units, out_base):
+    """Writes out_base.shp/.shx/.dbf plus .prj (Web Mercator) and .cpg (UTF-8) for one
+    operator's units, including only the _FIELD_SPECS attributes some unit actually filled."""
     active_specs = [
         spec for spec in _FIELD_SPECS
         if any(u[spec[3]].strip() for u in units)
@@ -440,6 +462,9 @@ def _build_shapefile(units, out_base):
 
 
 def main():
+    """Reads Units.csv, parses and validates each row's STRs, resolves geometry from BLM in
+    one batched pass, groups units by operator, writes one dated zip per operator into the
+    Maps folder (deleting the loose shapefile parts), and shows a summary with up to 10 issues."""
     if not os.path.isfile(_UNITS_CSV):
         _notify(
             f'Units.csv not found at:\n{_UNITS_CSV}\n\n'

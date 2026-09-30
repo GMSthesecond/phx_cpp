@@ -1,14 +1,20 @@
-﻿import os
+﻿"""Verifies landholding Section Names and Areas of Interest against their STR fields.
+Launched by the "STR Verification" button. Logs into Ark (ark_common credentials/session),
+saves the Check STR report as Check_STR_(EM)_(Full).csv in the [Folders] STRVerification
+folder, then writes Error_Report.csv there listing rows whose Section Name doesn't match
+section-township-range or whose Area of Interest can't be verified. Depends on playwright.
+"""
+import os
 import csv
 import ark_common
 from collections import defaultdict
 from playwright.sync_api import sync_playwright
 
-_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=4d424303b039c7d617785bde'
+_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=4d424303b039c7d617785bde'  # Ark "Check STR (EM) (Full)" report
 
-_OUT_DIR    = ark_common.read_folder('STRVerification', r'C:\Users\Ethan Mesecher\Desktop\AOI-STR')
-_INPUT_PATH = os.path.join(_OUT_DIR, 'Check_STR_(EM)_(Full).csv')
-_ERROR_PATH = os.path.join(_OUT_DIR, 'Error_Report.csv')
+_OUT_DIR    = ark_common.read_folder('STRVerification', r'C:\Users\Ethan Mesecher\Desktop\AOI-STR')  # Working folder ([Folders] STRVerification)
+_INPUT_PATH = os.path.join(_OUT_DIR, 'Check_STR_(EM)_(Full).csv')  # Downloaded report, overwritten each run
+_ERROR_PATH = os.path.join(_OUT_DIR, 'Error_Report.csv')  # Output: rows that failed verification
 
 
 # ---------------------------------------------------------------------------
@@ -16,6 +22,7 @@ _ERROR_PATH = os.path.join(_OUT_DIR, 'Error_Report.csv')
 # ---------------------------------------------------------------------------
 
 def _download_report(page):
+    """Download the report (60s generation wait) and save it to _INPUT_PATH."""
     dl = ark_common.trigger_download(page, _REPORT_URL, generation_wait_ms=60_000)
     os.makedirs(_OUT_DIR, exist_ok=True)
     dl.save_as(_INPUT_PATH)
@@ -28,6 +35,11 @@ def _download_report(page):
 
 
 def _process():
+    """Check each row of _INPUT_PATH and write failures to _ERROR_PATH.
+    Section Name must equal "SS-TTTN-RRRW" (zero-padded section; falls back to
+    Township Name when township/range are blank). Area of Interest (unless blank or
+    Non-Ops) must contain the section plus township-range, or the Section Name.
+    Rows with a blank Section Name are skipped; a later issue overwrites an earlier one."""
     errors = defaultdict(lambda: {"id": 0, "section_name": "", "area_of_interest": "", "combined_str": "", "issue": ""})
 
     with open(_INPUT_PATH, "r", encoding="utf-8-sig") as file:
@@ -89,6 +101,7 @@ def _process():
 # ---------------------------------------------------------------------------
 
 def main():
+    """Log in to Ark, download the report, save the session, then run the checks."""
     username, password = ark_common.read_credentials()
 
     with sync_playwright() as pw:
@@ -113,7 +126,7 @@ def main():
 
 if __name__ == '__main__':
     import traceback
-    _LOG_PATH = os.path.join(_OUT_DIR, 'str_verification_error.log')
+    _LOG_PATH = os.path.join(_OUT_DIR, 'str_verification_error.log')  # Traceback written here on failure (no message box)
     try:
         main()
     except Exception:

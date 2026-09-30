@@ -1,9 +1,17 @@
+"""PPIQ (price paid / in queue) check, launched by the "PPIQ" button.
+
+Downloads four Ark landholding reports (ark.phxcapitalgroup.com and ark.phoenixenergy.com)
+into the PPIQ folder with Playwright, then cross-checks price paid against the curative
+queue and writes the issues found to Update_Inverted.csv in the same folder.
+Uses ark_common for credentials ([Credentials]), login, session.json and report downloads.
+"""
 import csv
 import os
 import ark_common
 from collections import defaultdict
 from playwright.sync_api import sync_playwright
 
+# Hardcoded download/output folder (not configurable from the Settings window)
 _PPIQ_FOLDER = r"C:\Users\Ethan Mesecher\Desktop\PPIQ"
 
 # (url, generation_wait_ms) — time between triggering generation and checking the notification panel
@@ -16,6 +24,11 @@ _PPIQ_URLS = [
 
 
 def _download_files():
+    """Log in to Ark and download every report in _PPIQ_URLS into _PPIQ_FOLDER.
+
+    Waits 30s between downloads, re-checks login when switching to the
+    phoenixenergy.com domain for the last URL, and saves the session to session.json.
+    """
     os.makedirs(_PPIQ_FOLDER, exist_ok=True)
     username, password = ark_common.read_credentials()
 
@@ -54,6 +67,12 @@ def _download_files():
 
 
 def _run_analysis():
+    """Compare the four downloaded CSVs and write mismatches to Update_Inverted.csv.
+
+    Flags landholdings with price paid but not in queue, PHX-owned landholdings with no
+    price paid, queued curative offers with no price paid, and LHT values that differ
+    from the landholding price paid by more than $1. One issue is kept per ID (last wins).
+    """
     paid = defaultdict(lambda: {"id": 0, "name": "", "price_paid": 0})
     queue = defaultdict(lambda: {"id": 0, "name": "", "price_paid": 0, "status": 0})
     all_lh = defaultdict(lambda: {"id": 0, "name": "", "statuses": []})

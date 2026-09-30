@@ -1,3 +1,12 @@
+"""Roosevelt County (MT) scanned-document inventory; first step of the "Index" button.
+
+Walks the Roosevelt County image folders in Box Drive, skips PDFs whose filename is already
+in column A of the "Roosevelt" tab of Index of Scanned Docs.xlsx, and writes each new PDF's
+name, folder and page count to Roosevelt.csv, then appends the same rows to that tab.
+Prints "@PROGRESS <done> <total>" and "@DONE <processed>" lines on stdout for main.cpp's
+progress bar. Near-duplicate of doc_inventory_richland.py / doc_inventory_divide.py.
+Requires openpyxl and PyPDF2.
+"""
 import os
 import csv
 import shutil
@@ -5,6 +14,7 @@ import sys
 import time
 from typing import Optional, List, Set, Iterable, Tuple
 
+# Box Drive folders scanned recursively for document images
 ROOTS = [
     r"C:\Cloud\Box\Land\Title Folder\Document Images\Montana\Roosevelt County Images\Books 1 through 250",
     r"C:\Cloud\Box\Land\Title Folder\Document Images\Montana\Roosevelt County Images\Books 251 through 499",
@@ -14,11 +24,12 @@ ROOTS = [
     r"C:\Cloud\Box\Land\Title Folder\Document Images\Montana\Roosevelt County Images\Transcribed from Sheridan County",
 ]
 
+# CSV of newly found documents (overwritten each run)
 OUTPUT_CSV = r"C:\Users\Ethan Mesecher\Desktop\Steph Suko\Roosevelt.csv"
 
 # Excel (names to skip)
 EXCEL_PATH = r"C:\Cloud\Box\Ethan Mesecher\Index of Scanned Docs.xlsx"
-EXCEL_SHEET = "Roosevelt"
+EXCEL_SHEET = "Roosevelt"  # tab read for skip names and appended to with new rows
 EXCEL_COLUMN_INDEX = 1  # Column A = 1 (1-based)
 
 # What to put in the Folder column:
@@ -32,6 +43,7 @@ PDF_ONLY = True
 
 # -------- Long-path helper ----------------------------------------------------
 def win_long(path: str) -> str:
+    """Return an absolute path with the \\\\?\\ (or \\\\?\\UNC\\) prefix so Windows allows >260 chars."""
     if os.name == "nt":
         path = os.path.abspath(path)
         if not path.startswith("\\\\?\\"):
@@ -42,7 +54,7 @@ def win_long(path: str) -> str:
     return path
 
 def win_strip_long(path: str) -> str:
-    """Remove the long-path prefix for prettier display / CSV output."""
+    """Remove the long-path prefix for prettier display / CSV output (currently unused)."""
     if path.startswith("\\\\?\\UNC\\"):
         return "\\" + path[7:]  # -> \\server\share\...
     elif path.startswith("\\\\?\\"):
@@ -59,7 +71,8 @@ def load_indexed_names(
     """
     Reads the specified column (1-based) from the given sheet and returns a set
     of normalized names (lower-cased, trimmed). Assumes entries already include
-    the final form you want to match (e.g., 'filename.pdf').
+    the final form you want to match (e.g., 'filename.pdf'). Exits the script if
+    openpyxl, the workbook or the sheet is missing.
     """
     try:
         from openpyxl import load_workbook
@@ -140,13 +153,22 @@ def count_files_to_process(roots: List[str], indexed_names: Set[str]) -> int:
 
 # -------- Lightweight progress printer ----------------------------------------
 class Progress:
+    """Throttled progress reporter for both a human reader and the C++ launcher.
+
+    Each report prints a human "Processing: done/total" line and a machine-readable
+    "@PROGRESS <done> <total>" line that main.cpp (RunOneIndexScript) parses to move
+    the Index progress bar.
+    """
+
     def __init__(self, total: int, min_interval: float = 0.5):
+        """total is the pre-counted number of files to process; min_interval is seconds between reports."""
         self.total = total
         self.done = 0
         self.last_t = 0.0
         self.min_interval = min_interval
 
     def tick(self, n: int = 1):
+        """Add n to the done count and print progress (plus @PROGRESS) at most every min_interval."""
         self.done += n
         now = time.time()
         if now - self.last_t >= self.min_interval:
@@ -156,6 +178,7 @@ class Progress:
             print(f"@PROGRESS {self.done} {self.total}", flush=True)
 
     def finish(self):
+        """Print the final 100% human-readable progress line (no @PROGRESS tag)."""
         if self.total > 0:
             print(f"\rProcessing: {self.total:,}/{self.total:,} (100.0%)")
         else:
@@ -163,6 +186,7 @@ class Progress:
 
 # -------- PDF page counter (PyPDF2) -------------------------------------------
 def get_pdf_page_count(pdf_path: str) -> Optional[str]:
+    """Return the PDF's page count as a string, a status like "Encrypted/Unreadable", or None if the file vanished."""
     try:
         from PyPDF2 import PdfReader
         with open(pdf_path, "rb") as f:
@@ -234,6 +258,10 @@ def append_rows_to_excel(excel_path: str, sheet: str, rows: List[List[str]]) -> 
 
 # -------- Main loop with Excel-driven filtering --------------------------------
 def main():
+    """Scan ROOTS for unindexed PDFs, write them to OUTPUT_CSV, then append them to the Excel tab.
+
+    Prints "@DONE <processed>" (number of new documents) for main.cpp's final summary.
+    """
     # Prepare roots with long-path handling and a simple label
     prepared_roots: List[Tuple[str, str]] = []
     for r in ROOTS:

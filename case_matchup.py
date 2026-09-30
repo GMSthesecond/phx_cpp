@@ -1,3 +1,9 @@
+"""Cross-checks Bakken unit docket info against regulatory cases and flags discrepancies.
+Launched by the "Case Matchup" button. Reads All_Cases.csv and the units docket export
+from the [Folders] CaseMatchup folder (read via ark_common.read_folder), matches cases to
+units by STR set, and writes Case_Matchup_Export.<mm.dd.yyyy>.csv with a Notes column
+to the same folder. Offline (no browser); shows a message box on success or failure.
+"""
 import ctypes
 import csv
 import os
@@ -7,13 +13,15 @@ import ark_common
 
 
 def _notify(message):
+    """Show an info message box titled "Case Matchup"."""
     ctypes.windll.user32.MessageBoxW(0, message, 'Case Matchup', 0x40)
 
 
-_IN_DIR = ark_common.read_folder('CaseMatchup', r'C:\Users\Ethan Mesecher\Desktop\Unit Connect to Cases')
-_CASES_PATH = os.path.join(_IN_DIR, 'All_Cases.csv')
-_UNITS_PATH = os.path.join(_IN_DIR, 'Phoenix_Bakken_Units_-_Cases_Docket_Information_(Ruby).csv')
+_IN_DIR = ark_common.read_folder('CaseMatchup', r'C:\Users\Ethan Mesecher\Desktop\Unit Connect to Cases')  # Input and output folder ([Folders] CaseMatchup)
+_CASES_PATH = os.path.join(_IN_DIR, 'All_Cases.csv')  # Case export: number, type, hearing date, applicant, STRs, order status/number
+_UNITS_PATH = os.path.join(_IN_DIR, 'Phoenix_Bakken_Units_-_Cases_Docket_Information_(Ruby).csv')  # Unit export: STRs, cases, spacing/pooling fields, record id
 
+# Column order of the Case_Matchup_Export CSV.
 _OUTPUT_HEADER = [
     'Record Id', 'Unit #',
     'Spacing Hearing Date', 'Spacing Status', 'Spacing Order Number',
@@ -22,10 +30,11 @@ _OUTPUT_HEADER = [
     'Existing Cases', 'Notes',
 ]
 
-_DATE_FORMATS = ('%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d', '%Y/%m/%d')
+_DATE_FORMATS = ('%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d', '%Y/%m/%d')  # Hearing-date formats tried in order by _parse_date
 
 
 def _parse_date(value):
+    """Parse a date string using _DATE_FORMATS; returns None if blank or unrecognized."""
     value = (value or '').strip()
     if not value:
         return None
@@ -38,14 +47,17 @@ def _parse_date(value):
 
 
 def _split_list(value):
+    """Split a comma-separated field into a list of trimmed, non-empty parts."""
     return [part.strip() for part in value.split(',') if part.strip()]
 
 
 def _split_strs(value):
+    """Split a comma-separated STR field into an uppercase set for order-insensitive comparison."""
     return {part.strip().upper() for part in value.split(',') if part.strip()}
 
 
 def _dedup_ordered(items):
+    """Remove duplicates while keeping first-seen order."""
     seen = set()
     out = []
     for item in items:
@@ -56,6 +68,9 @@ def _dedup_ordered(items):
 
 
 def _read_cases():
+    """Load All_Cases.csv into case dicts, classifying each as spacing/density/pooling/other.
+    Rows with fewer than 13 columns or no first column are skipped. Commingling and
+    Permit Protest cases are flagged for overlap (partial) STR matching."""
     cases = []
     with open(_CASES_PATH, newline='', encoding='utf-8-sig') as f:
         reader = csv.reader(f)
@@ -114,6 +129,7 @@ def _strs_overlap(case_strs, unit_strs):
 
 
 def _read_units():
+    """Load the units docket CSV into unit dicts; rows without a Record Id (column 12) are skipped."""
     units = []
     with open(_UNITS_PATH, newline='', encoding='utf-8-sig') as f:
         reader = csv.reader(f)
@@ -139,10 +155,12 @@ def _read_units():
 
 
 def _is_denied(case):
+    """True if the case's order status is Denied."""
     return case['order_status'].strip().lower() == 'denied'
 
 
 def _is_granted(case):
+    """True if the case's order status is Granted."""
     return case['order_status'].strip().lower() == 'granted'
 
 
@@ -166,12 +184,14 @@ def _pick_best(candidates):
     return best
 
 
-_BLANK_STATUSES = ('', 'not started')
+_BLANK_STATUSES = ('', 'not started')  # Unit status values treated as equivalent to "no case yet"
 
 
 def _compute_status(best, has_denied):
     """Returns (expected_status, source_case). expected_status is None when
-    blank or "Not Started" are both acceptable (no relevant, non-denied case)."""
+    blank or "Not Started" are both acceptable (no relevant, non-denied case).
+    Otherwise Granted, then Case Heard if the effective hearing date has passed,
+    else Docketed."""
     if best is None:
         return ('Not Started', None) if has_denied else (None, None)
     if _is_granted(best):
@@ -183,6 +203,7 @@ def _compute_status(best, has_denied):
 
 
 def _status_matches(existing_status, expected_status):
+    """Case-insensitive status compare; None or "Not Started" accepts blank or "Not Started"."""
     existing = existing_status.strip().lower()
     if expected_status is None or expected_status == 'Not Started':
         return existing in _BLANK_STATUSES
@@ -205,6 +226,10 @@ def _mentions_case_denied(text, case_number):
 
 
 def _build_notes(unit, matched):
+    """Compare one unit's docket fields against its matched cases and return
+    newline-joined review notes (empty string if nothing to flag). Checks denied
+    cases noted in Docket Notes, spacing/pooling hearing dates, order numbers and
+    statuses, the Orders list, orders not tied to an attached case, and the Cases list."""
     notes = []
 
     denied_numbers = {c['case_number'] for c in matched if _is_denied(c)}
@@ -309,6 +334,7 @@ def _build_notes(unit, matched):
 
 
 def _dedup_ordered_cases(cases):
+    """Remove cases with a repeated case number, keeping first-seen order."""
     seen = set()
     out = []
     for c in cases:
@@ -319,6 +345,8 @@ def _dedup_ordered_cases(cases):
 
 
 def _process(units, cases):
+    """Match cases to each unit by STR (exact set, or overlap for partial-match types)
+    and store the resulting notes in unit['notes']; returns the same list."""
     for unit in units:
         matched = [
             c for c in cases
@@ -330,6 +358,7 @@ def _process(units, cases):
 
 
 def _write_output(units, out_path):
+    """Write every unit (flagged or not) with its notes to out_path using _OUTPUT_HEADER."""
     with open(out_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(_OUTPUT_HEADER)
@@ -344,6 +373,7 @@ def _write_output(units, out_path):
 
 
 def main():
+    """Read cases and units, build notes, write the dated export, and show a summary box."""
     os.makedirs(_IN_DIR, exist_ok=True)
     cases = _read_cases()
     units = _read_units()

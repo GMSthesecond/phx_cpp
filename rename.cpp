@@ -1,3 +1,8 @@
+// Rename: bulk file renamer + MP3 artist tag editor driven by an editable CSV.
+// Opened by the main window's "Rename" button. Entry points: RegisterRenameClass, OpenRename.
+// Works on the hardcoded Desktop\Rename folder: writes rename.csv there (Original Filename,
+// New Filename, Artist, New Artist), then reads it back to rename files and rewrite
+// ID3v2 TPE1 / ID3v1 artist tags in place. No INI use.
 #include "rename.h"
 #include <shellapi.h>
 #include <string>
@@ -5,15 +10,18 @@
 
 // ─── Paths ─────────────────────────────────────────────────────────────────────
 
+// Hardcoded working folder, and the CSV file name inside it (excluded from the listing).
 static const wchar_t* FOLDER_PATH = L"C:\\Users\\Ethan Mesecher\\Desktop\\Rename";
 static const wchar_t* CSV_NAME    = L"rename.csv";
 
+// Full path of rename.csv.
 static std::wstring CsvPath() {
     return std::wstring(FOLDER_PATH) + L"\\" + CSV_NAME;
 }
 
 // ─── String / CSV helpers (same conventions as organize.cpp) ─────────────────
 
+// Returns s without leading/trailing spaces, tabs, CR, LF.
 static std::wstring Trim(const std::wstring& s) {
     size_t a = s.find_first_not_of(L" \t\r\n");
     if (a == std::wstring::npos) return {};
@@ -21,6 +29,7 @@ static std::wstring Trim(const std::wstring& s) {
     return s.substr(a, b - a + 1);
 }
 
+// Splits one CSV line into fields; handles quoted fields and "" escapes, drops CR.
 static std::vector<std::wstring> SplitCSV(const std::wstring& line) {
     std::vector<std::wstring> out;
     std::wstring field;
@@ -40,6 +49,7 @@ static std::vector<std::wstring> SplitCSV(const std::wstring& line) {
     return out;
 }
 
+// Wraps a field in quotes (doubling inner quotes) if it contains a comma, quote, or newline.
 static std::wstring EscCSV(const std::wstring& s) {
     if (s.find_first_of(L",\"\n\r") == std::wstring::npos) return s;
     std::wstring o = L"\"";
@@ -47,6 +57,7 @@ static std::wstring EscCSV(const std::wstring& s) {
     return o + L'"';
 }
 
+// True if name ends with ext (e.g. L".mp3"), case-insensitive.
 static bool HasExtension(const std::wstring& name, const wchar_t* ext) {
     size_t extLen = wcslen(ext);
     if (name.size() < extLen) return false;
@@ -57,6 +68,7 @@ static bool HasExtension(const std::wstring& name, const wchar_t* ext) {
     return tail == want;
 }
 
+// Case-insensitive string equality (Windows file names are case-insensitive).
 static bool SameNameCI(const std::wstring& a, const std::wstring& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); i++)
@@ -66,6 +78,7 @@ static bool SameNameCI(const std::wstring& a, const std::wstring& b) {
 
 // ─── Whole-file read/write ─────────────────────────────────────────────────────
 
+// Reads the entire file into out. Returns false on open/read failure or short read.
 static bool ReadWholeFile(const std::wstring& path, std::vector<BYTE>& out) {
     HANDLE hf = CreateFile(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
         NULL, OPEN_EXISTING, 0, NULL);
@@ -79,6 +92,7 @@ static bool ReadWholeFile(const std::wstring& path, std::vector<BYTE>& out) {
     return ok && (size_t)nr == out.size();
 }
 
+// Overwrites (CREATE_ALWAYS) path with data. Returns false on open/write failure or short write.
 static bool WriteWholeFile(const std::wstring& path, const std::vector<BYTE>& data) {
     HANDLE hf = CreateFile(path.c_str(), GENERIC_WRITE, 0,
         NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -97,39 +111,47 @@ static bool WriteWholeFile(const std::wstring& path, const std::vector<BYTE>& da
 // untouched on write (too easy to corrupt) — only the ID3v1 fallback is
 // updated/added for those files.
 
+// Decodes a 4-byte ID3v2 synchsafe integer (7 bits per byte).
 static DWORD Synchsafe32(const BYTE* p) {
     return ((DWORD)(p[0] & 0x7F) << 21) | ((DWORD)(p[1] & 0x7F) << 14) |
            ((DWORD)(p[2] & 0x7F) << 7)  |  (DWORD)(p[3] & 0x7F);
 }
+// Encodes v as a 4-byte ID3v2 synchsafe integer into out.
 static void EncodeSynchsafe32(DWORD v, BYTE* out) {
     out[0] = (BYTE)((v >> 21) & 0x7F);
     out[1] = (BYTE)((v >> 14) & 0x7F);
     out[2] = (BYTE)((v >> 7)  & 0x7F);
     out[3] = (BYTE)(v & 0x7F);
 }
+// Decodes a 4-byte big-endian integer (ID3v2.3 frame sizes).
 static DWORD BigEndian32(const BYTE* p) {
     return ((DWORD)p[0] << 24) | ((DWORD)p[1] << 16) | ((DWORD)p[2] << 8) | (DWORD)p[3];
 }
+// Encodes v as a 4-byte big-endian integer into out.
 static void EncodeBigEndian32(DWORD v, BYTE* out) {
     out[0] = (BYTE)(v >> 24); out[1] = (BYTE)(v >> 16);
     out[2] = (BYTE)(v >> 8);  out[3] = (BYTE)v;
 }
 
+// One ID3v2 frame, kept raw so it can be written back unchanged.
 struct Id3Frame {
-    std::string id;
-    WORD flags;
-    std::vector<BYTE> data;
+    std::string id;         // 4-char frame id, e.g. "TPE1"
+    WORD flags;             // 2 frame flag bytes, preserved as-is
+    std::vector<BYTE> data; // frame payload (after the 10-byte frame header)
 };
 
+// Parsed ID3v2 tag header plus its frames (see ParseID3v2).
 struct Id3v2Tag {
     bool present    = false;
-    bool unsupported = false; // true => don't touch on write (still fine for read)
+    bool unsupported = false; // true => frames not parsed; tag kept verbatim on write (reads fall back to ID3v1)
     BYTE version    = 0;      // major version (3 or 4 expected)
     BYTE flags      = 0;
     size_t tagEnd   = 0;      // offset of first byte after the tag
     std::vector<Id3Frame> frames;
 };
 
+// Parses an ID3v2 tag at the start of data. Marks it unsupported if it is not v2.3/2.4,
+// overruns the file, or has flag bits 0xB0 set; otherwise collects frames until padding.
 static Id3v2Tag ParseID3v2(const std::vector<BYTE>& data) {
     Id3v2Tag t;
     if (data.size() < 10 || data[0] != 'I' || data[1] != 'D' || data[2] != '3') return t;
@@ -159,6 +181,7 @@ static Id3v2Tag ParseID3v2(const std::vector<BYTE>& data) {
     return t;
 }
 
+// Serializes frames into a complete ID3v2 tag (header flags 0, no padding) for the given version.
 static std::vector<BYTE> BuildID3v2(BYTE version, const std::vector<Id3Frame>& frames) {
     std::vector<BYTE> body;
     for (auto& f : frames) {
@@ -210,6 +233,7 @@ static std::wstring DecodeID3Text(const std::vector<BYTE>& d) {
     return Trim(out);
 }
 
+// Builds a text-frame payload: encoding byte 0x01 + UTF-16LE BOM + text (no terminator).
 static std::vector<BYTE> EncodeID3TextUTF16(const std::wstring& s) {
     std::vector<BYTE> out;
     out.push_back(0x01); // encoding: UTF-16 with BOM
@@ -218,6 +242,7 @@ static std::vector<BYTE> EncodeID3TextUTF16(const std::wstring& s) {
     return out;
 }
 
+// Size of a trailing ID3v1 tag ("TAG" + fields; artist at offset 33, 30 bytes).
 static const size_t ID3V1_SIZE = 128;
 
 // Reads the Artist field from a trailing ID3v1 tag, or "" if none present.
@@ -235,6 +260,7 @@ static std::wstring ReadID3v1Artist(const std::vector<BYTE>& data) {
 }
 
 // Reads the MP3 artist tag: prefers ID3v2 TPE1, falls back to ID3v1.
+// Reads the whole file; returns "" if unreadable or untagged. Called by GenerateCSV.
 static std::wstring ReadMp3Artist(const std::wstring& path) {
     std::vector<BYTE> data;
     if (!ReadWholeFile(path, data)) return L"";
@@ -248,6 +274,8 @@ static std::wstring ReadMp3Artist(const std::wstring& path) {
 
 // Writes a new artist into the MP3's tags. Returns false only on an I/O error;
 // tag structures we don't understand are simply left as-is (not an error).
+// Replaces/adds TPE1 in a supported ID3v2 tag, patches or appends an ID3v1 tag,
+// and rewrites the whole file in place. Called by ApplyRenames.
 static bool WriteMp3Artist(const std::wstring& path, const std::wstring& newArtist) {
     std::vector<BYTE> data;
     if (!ReadWholeFile(path, data)) return false;
@@ -303,6 +331,7 @@ static bool WriteMp3Artist(const std::wstring& path, const std::wstring& newArti
 
 // ─── CSV generation ────────────────────────────────────────────────────────────
 
+// Writes ws to hOut as UTF-8 (no terminator).
 static void WriteUtf8(HANDLE hOut, const std::wstring& ws) {
     int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, NULL, 0, NULL, NULL);
     if (n <= 1) return;
@@ -312,6 +341,9 @@ static void WriteUtf8(HANDLE hOut, const std::wstring& ws) {
     WriteFile(hOut, mb.data(), n - 1, &nw, NULL);
 }
 
+// "Generate File List" handler: creates the Rename folder if missing, lists its files
+// (excluding rename.csv), writes rename.csv (UTF-8 BOM) with each name and MP3 artist
+// duplicated into the "New" columns, shows instructions, then opens the CSV with ShellExecute.
 static void GenerateCSV(HWND hwndParent) {
     CreateDirectory(FOLDER_PATH, NULL);
 
@@ -361,6 +393,9 @@ static void GenerateCSV(HWND hwndParent) {
 
 // ─── Apply renames ──────────────────────────────────────────────────────────────
 
+// "Apply Renames + Tags" handler: reads rename.csv, and for each row renames the file
+// (MoveFile, skipped if target exists) when New Filename differs, then writes the
+// artist tag via WriteMp3Artist when New Artist differs on an .mp3. Shows a summary/issues box.
 static void ApplyRenames(HWND hwndParent) {
     std::vector<BYTE> raw;
     if (!ReadWholeFile(CsvPath(), raw)) {
@@ -441,13 +476,18 @@ static void ApplyRenames(HWND hwndParent) {
 
 // ─── Dialog UI ──────────────────────────────────────────────────────────────────
 
+// Control IDs for the rename dialog buttons.
 #define ID_RN_GENERATE 601
 #define ID_RN_APPLY    602
 #define ID_RN_CLOSE    603
 
+// Set by RenameProc on close; ends OpenRename's nested message loop.
 static bool g_renameDone = false;
+// Window class name for the rename dialog.
 static const wchar_t RENAME_CLS[] = L"RenameDlg";
 
+// Window proc for the rename dialog: instruction text plus Generate (GenerateCSV),
+// Apply (ApplyRenames), and Close buttons. Close/WM_CLOSE sets g_renameDone and destroys.
 static LRESULT CALLBACK RenameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
@@ -489,6 +529,7 @@ static LRESULT CALLBACK RenameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProc(hwnd, msg, wp, lp);
 }
 
+// Registers the RenameDlg class with RenameProc. Called once from WinMain.
 void RegisterRenameClass(HINSTANCE hInstance) {
     WNDCLASS wc      = {};
     wc.lpfnWndProc   = RenameProc;
@@ -499,6 +540,8 @@ void RegisterRenameClass(HINSTANCE hInstance) {
     RegisterClass(&wc);
 }
 
+// Shows the rename dialog modally: disables hwndParent and runs a nested message
+// loop until g_renameDone. Called by the main window's Rename button.
 void OpenRename(HWND hwndParent) {
     g_renameDone = false;
     EnableWindow(hwndParent, FALSE);
