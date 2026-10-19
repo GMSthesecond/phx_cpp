@@ -1,12 +1,12 @@
 """Cross-checks Bakken unit docket info against regulatory cases and flags discrepancies.
-Launched by the "Case Matchup" button. Reads All_Cases.csv and the units docket export
+Launched by the "Unit Connect to Cases" button. Reads All_Cases.csv and the units docket export
 from the [Folders] CaseMatchup folder (read via ark_common.read_folder), matches cases to
 units by STR set, and writes Case_Matchup_Export.<mm.dd.yyyy>.csv with a Notes column
 to the same folder. Offline (no browser); shows a message box on success or failure.
 """
-import ctypes
 import csv
 import os
+import re
 from datetime import date, datetime
 
 import ark_common
@@ -14,7 +14,7 @@ import ark_common
 
 def _notify(message):
     """Show an info message box titled "Case Matchup"."""
-    ctypes.windll.user32.MessageBoxW(0, message, 'Case Matchup', 0x40)
+    ark_common.notify('Case Matchup', message, 0x40)
 
 
 _IN_DIR = ark_common.read_folder('CaseMatchup', r'C:\Users\Ethan Mesecher\Desktop\Unit Connect to Cases')  # Input and output folder ([Folders] CaseMatchup)
@@ -212,11 +212,14 @@ def _status_matches(existing_status, expected_status):
 
 def _mentions_case(text, case_number, keyword):
     """Whether docket-notes text documents the given case alongside a keyword
-    (matches the existing staff convention, e.g. "Spacing Case 31842 - DENIED")."""
+    (matches the existing staff convention, e.g. "Spacing Case 31842 - DENIED"). The case number
+    must appear whole, not inside a longer one; case is ignored."""
     if not case_number:
         return False
+    # The case number must stand alone: "C-1" is not found inside "C-14" or "AC-1"
+    number = re.compile(rf'(?<![0-9a-z]){re.escape(case_number.lower())}(?![0-9])')
     text_lower = text.lower()
-    return case_number.lower() in text_lower and keyword.lower() in text_lower
+    return bool(number.search(text_lower)) and keyword.lower() in text_lower
 
 
 def _mentions_case_denied(text, case_number):
@@ -392,15 +395,4 @@ def main():
 
 
 if __name__ == '__main__':
-    import traceback
-    try:
-        main()
-    except Exception:
-        log_path = os.path.join(_IN_DIR, 'case_matchup_error.log')
-        os.makedirs(_IN_DIR, exist_ok=True)
-        with open(log_path, 'w', encoding='utf-8') as f:
-            traceback.print_exc(file=f)
-        ctypes.windll.user32.MessageBoxW(
-            0, f'Case Matchup failed. See:\n{log_path}', 'Case Matchup', 0x10
-        )
-        raise
+    ark_common.run_button('Case Matchup', main, os.path.join(_IN_DIR, 'case_matchup_error.log'))

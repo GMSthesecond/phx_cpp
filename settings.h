@@ -1,15 +1,10 @@
 #pragma once
 #include <windows.h>
 
-// Control IDs for folder rows in the settings window
-#define ID_FOLDER_DMD_LABEL   11
-#define ID_FOLDER_STR_LABEL   12
-#define ID_FOLDER_DMD_CHANGE  13
-#define ID_FOLDER_STR_CHANGE  14
-#define ID_FOLDER_CD_LABEL    15
-#define ID_FOLDER_CD_CHANGE   16
-#define ID_FOLDER_MAPS_LABEL  17
-#define ID_FOLDER_MAPS_CHANGE 18
+// Control ids in the settings window: row i's value (path label or text box) is
+// ID_SETTING_VALUE_BASE + i and its Change / Save button is ID_SETTING_BUTTON_BASE + i.
+#define ID_SETTING_VALUE_BASE  1000
+#define ID_SETTING_BUTTON_BASE 2000
 
 // Registers the settings window class — call once in WinMain before any window is created
 void RegisterSettingsClass(HINSTANCE hInstance);
@@ -18,7 +13,16 @@ void RegisterSettingsClass(HINSTANCE hInstance);
 // Safe to call while settings is already open — does nothing in that case.
 void OpenSettings(HWND hwndParent);
 
-// Reads saved folder paths from %APPDATA%\PhoenixLandDept\settings.ini.
-// Call once in WinMain before any window is created.
-// Falls back to compiled-in defaults if the file does not exist yet.
-void LoadFolders();
+// Reads every setting from %APPDATA%\PhoenixLandDept\settings.ini.
+// Call once in WinMain before any window is created. Settings missing from the file
+// keep their compiled-in defaults.
+void LoadSettings();
+
+// Current value of settings.ini [section] key (as loaded or last changed in the dialog),
+// or an empty string if the key isn't one of the settings window's rows.
+// Used by Organization ([Folders] Organize) and Rename ([Folders] Rename).
+const TCHAR* GetSetting(const TCHAR* section, const TCHAR* key);
+
+// Changes a setting in memory (not saved; the dialog calls SaveSettings after a change).
+// Returns false if [section] key isn't one of the rows.
+bool SetSetting(const TCHAR* section, const TCHAR* key, const TCHAR* value);

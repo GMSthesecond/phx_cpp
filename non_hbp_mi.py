@@ -2,90 +2,39 @@
 Launched by the "Case Update" button. Logs into Ark (ark_common credentials/session),
 downloads the report, overwrites column 2 with today's date and appends a "Last updated"
 column, writes non_hbp_mi.<mm.dd.yyyy>.csv to the [Folders] NonHBPMI folder, then uploads
-it through the Ark data loader as a Units Update. Depends on playwright; no error dialog.
+it (if it has any rows) through the Ark data loader as a Units Update. Also Mirror's
+"Case Update" step (mirror_step). Depends on playwright; errors shown in a message box.
 """
 import csv
 import os
-import re
 from datetime import date
 
 import ark_common
 
+
+_DEFAULT_DIR = r'C:\Users\Ethan Mesecher\Desktop\Case Update'  # output folder used when [Folders] NonHBPMI is unset
+
+
+def _notify(message):
+    """Show an information message box titled Case Update (the only visible error channel)."""
+    ark_common.notify('Case Update', message, 0x40)
+
+
 _REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=391d699d4edefdf6073d9e8f'  # Ark report of units to stamp (non-HBP MI units, per the filename)
-_UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'  # Ark data-loader new-upload page
-
-
-def _upload(page, csv_path, upload_name, dataset='Units', operation='Update'):
-    """Drive the Ark data loader to upload csv_path as the given dataset/operation.
-    Blocks until the "X of X" completion text appears (up to 2 minutes).
-    Duplicated in close_dates.py."""
-    page.goto(_UPLOAD_URL)
-    page.wait_for_load_state('networkidle')
-
-    # 1 — select the operation card (Update, Insert, etc.)
-    card_label = page.locator('p.font-semibold', has_text=operation)
-    card_label.wait_for(timeout=15_000)
-    page.wait_for_timeout(1500)
-    card_label.click()
-    page.wait_for_load_state('networkidle')
-
-    # 2 — select the dataset from the listbox
-    page.locator('[aria-haspopup="listbox"]').click(timeout=10_000)
-    page.get_by_role('option', name=dataset, exact=True).click(timeout=10_000)
-
-    # 3 — fill the upload name (close the listbox dropdown first with Escape)
-    page.keyboard.press('Escape')
-    name_input = page.locator('input.bg-neutral-gray-1')
-    name_input.wait_for(timeout=10_000)
-    name_input.click()
-    name_input.press_sequentially(upload_name)
-
-    # 4 — attach the CSV
-    page.locator('input[type="file"]').set_input_files(csv_path)
-
-    # 5 — continue to the next page
-    page.get_by_role('button', name=re.compile(r'continue', re.I)).click()
-    page.wait_for_load_state('networkidle')
-
-    # 6 — submit
-    page.get_by_role('button', name=re.compile(r'save and upload', re.I)).click()
-
-    # 7 — confirm in the popup/modal
-    confirm_btn = page.get_by_role('button', name=re.compile(rf'^{operation}$', re.I))
-    confirm_btn.wait_for(timeout=15_000)
-    confirm_btn.click()
-
-    # Wait for "X of X" completion indicator (up to 2 minutes)
-    page.get_by_text(re.compile(r'\d+ of \d+')).first.wait_for(timeout=120_000)
-    print('Upload complete.', flush=True)
 
 
 def main():
-    """Log in, download the report, set each row's date column to today, write the CSV,
-    upload it, and save the browser session (only if every step succeeds)."""
-    out_dir = ark_common.read_folder(
-        'NonHBPMI', r'C:\Users\Ethan Mesecher\Desktop\Case Update'
-    )
+    """Log in, download the report, set each row's date column to today, write the CSV, and
+    upload it if it has any rows. Always saves the browser session and closes the browser,
+    even on failure. Returns the number of units uploaded."""
+    out_dir = ark_common.read_folder('NonHBPMI', _DEFAULT_DIR)
     os.makedirs(out_dir, exist_ok=True)
 
-    username, password = ark_common.read_credentials()
     today_str = date.today().strftime('%m/%d/%Y')
     today_file_str = date.today().strftime('%m.%d.%Y')
 
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        ctx = browser.new_context(
-            storage_state=ark_common._SESSION if os.path.exists(ark_common._SESSION) else None,
-            accept_downloads=True
-        )
-        page = ctx.new_page()
-
-        page.goto(_REPORT_URL)
-        if 'microsoftonline.com' in page.url or 'cloudflareaccess.com' in page.url:
-            ark_common.login(page, username, password)
-
+    
+    with ark_common.ark_page(_REPORT_URL) as page:
         dl = ark_common.trigger_download(page, _REPORT_URL)
 
         with open(dl.path(), newline='', encoding='utf-8-sig') as f:
@@ -107,11 +56,20 @@ def main():
             writer.writerows(rows)
         print(f'Saved {len(rows)} row(s) to: {out_path}', flush=True)
 
-        _upload(page, out_path, f'case update {today_file_str}')
+        # Nothing to send when there are no rows (an empty upload used to time out)
+        if rows:
+            ark_common.upload(page, out_path, f'case update {today_file_str}', dataset='Units')
+    return len(rows)
 
-        ctx.storage_state(path=ark_common._SESSION)
-        browser.close()
+
+def mirror_step():
+    """Mirror's Case Update step: run and return (result kind, report line)."""
+    updated = main()
+    if updated:
+        return ark_common.UPLOADED, f"Updated {ark_common.plural(updated, 'unit')} to today's date"
+    return ark_common.NOTHING, 'No units to update'
 
 
 if __name__ == '__main__':
-    main()
+    ark_common.run_button('Case Update', main,
+                          os.path.join(ark_common.read_folder('NonHBPMI', _DEFAULT_DIR), 'non_hbp_mi_error.log'))

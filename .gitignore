@@ -16,3 +16,4 @@
 # Generated resources and cache
 app.res
 __pycache__/
+.pytest_cache/

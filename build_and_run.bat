@@ -6,7 +6,6 @@ cl /nologo /EHsc /D UNICODE /D _UNICODE *.cpp app.res user32.lib gdi32.lib ole32
 if %errorlevel% == 0 (
     mt -nologo -manifest phxcpp.exe.manifest -outputresource:phxcpp.exe;1
     explorer phxcpp.exe
-    git push
 ) else (
     echo Build failed.
     pause

@@ -1,35 +1,33 @@
 """Uploads map_builder's per-operator shapefile zips to Enverus drillinginfo (DI) as map layers.
-Launched by the "Map" button (step 2, after map_builder.py finishes).
+Launched by the "Maps" button (step 2, after map_builder.py finishes).
 Reads every "<YYYY.MM.DD>. <Operator>.zip" in the Maps folder ([Folders] Maps), Enverus login
 from [EnverusCredentials], and operator_colors.json. Logs in headless, uploads each zip, sets its
 fill color, adds it to the view, and saves the "Phoenix Units" workspace; updates operator_colors.json.
 Successfully uploaded zips are moved to the Uploaded subfolder of Maps so later runs don't upload them again.
-Depends on Playwright (Chromium) plus ark_common and operator_colors."""
-import ctypes
+Depends on Playwright (Chromium) plus ark_common and operator_colors; if Playwright is missing
+it says to install it (ark_common.missing_package)."""
 import glob
 import os
 import re
 
-from playwright.sync_api import sync_playwright
-
 import ark_common
 import operator_colors as opcolors
+
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError as _err:
+    ark_common.missing_package('Map Uploader', _err)
 
 _MAPS_DIR = ark_common.read_folder('Maps', r'C:\Users\Ethan Mesecher\Desktop\Maps')  # where map_builder leaves its zips
 _UPLOADED_DIR = os.path.join(_MAPS_DIR, 'Uploaded')  # zips move here after a successful upload + workspace save
 
-# Enverus Auth0 universal-login page (the state= token is baked in from a captured URL).
-_LOGIN_URL = (
-    'https://login.auth.enverus.com/u/login/identifier?state=hKFo2SByUWZJb2JjcW9XX2F6TV90'
-    'LTNueTI0Wmd6V0RuUmVwTqFur3VuaXZlcnNhbC1sb2dpbqN0aWTZIG9ON0tac3pLSHVaUW9RT1RrcEhtYkxqMmFS'
-    'YjZwcmtno2NpZNkgZk1xTDZmTFE2eDFPQ3B5dER2Y3RRN0t1RkFneFVrSEE#/default'
-)
-_APP_URL = 'https://app.enverus.com/production/'  # DI production map app where layers are managed
+_APP_URL = 'https://app.enverus.com/production/'  # DI production map app; opened signed out, it redirects to a fresh sign-in page
+_LOGIN_HOST = 'login.auth.enverus.com'  # Enverus Auth0 sign-in site that _login waits to leave
 
 
 def _notify(message):
     """Shows a blocking "Map Uploader" info message box (the only UI, since there is no console)."""
-    ctypes.windll.user32.MessageBoxW(0, message, 'Map Uploader', 0x40)
+    ark_common.notify('Map Uploader', message, 0x40)
 
 
 def _zip_layer_name(zip_path):
@@ -48,15 +46,18 @@ def _operator_from_layer_name(layer_name):
 
 
 def _login(page):
-    """Signs in to Enverus with the [EnverusCredentials] identifier/password and waits for the gallery page."""
+    """Signs in to Enverus with the [EnverusCredentials] identifier/password. Starts from _APP_URL,
+    which sends a signed-out browser to the sign-in page with a fresh state= token (a captured
+    sign-in link expires), and waits until Enverus leaves the sign-in site."""
     identifier, password = ark_common.read_enverus_credentials()
-    page.goto(_LOGIN_URL, wait_until='networkidle', timeout=30000)
+    page.goto(_APP_URL, wait_until='networkidle', timeout=45_000)
+    page.wait_for_selector('input[name="username"]', timeout=30_000)
     page.fill('input[name="username"]', identifier)
     page.click('button[type="submit"]')
     page.wait_for_selector('input[type="password"]', timeout=15_000)
     page.fill('input[type="password"]', password)
     page.click('button[type="submit"]')
-    page.wait_for_url('**/gallery/**', timeout=30_000)
+    page.wait_for_url(lambda url: _LOGIN_HOST not in url, timeout=30_000)
 
 
 def _open_map_layers(page):
@@ -249,7 +250,7 @@ def main():
             f'\n\nReassigned {len(rescrubbed)} old reddish operator color(s): '
             + ', '.join(rescrubbed[:10])
             + ('...' if len(rescrubbed) > 10 else '')
-            + '. Re-run Map for any of those operators not uploaded just now to update '
+            + '. Re-run Maps for any of those operators not uploaded just now to update '
               'their color in drillinginfo too.'
         )
     if errors:
@@ -258,7 +259,4 @@ def main():
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        _notify(f'Map Uploader failed:\n{e}')
+    ark_common.run_button('Map Uploader', main, os.path.join(_MAPS_DIR, 'map_uploader_error.log'))

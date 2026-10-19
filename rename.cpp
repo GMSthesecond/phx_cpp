@@ -1,61 +1,28 @@
 // Rename: bulk file renamer + MP3 artist tag editor driven by an editable CSV.
 // Opened by the main window's "Rename" button. Entry points: RegisterRenameClass, OpenRename.
-// Works on the hardcoded Desktop\Rename folder: writes rename.csv there (Original Filename,
-// New Filename, Artist, New Artist), then reads it back to rename files and rewrite
-// ID3v2 TPE1 / ID3v1 artist tags in place. No INI use.
+// Works on the [Folders] Rename folder (Settings; default Desktop\Rename): writes rename.csv there
+// (Original Filename, New Filename, Artist, New Artist), then reads it back to rename files and
+// rewrite ID3v2 TPE1 / ID3v1 artist tags (safely, via a temp file).
 #include "rename.h"
+#include "settings.h"
+#include "csv_text.h"
 #include <shellapi.h>
 #include <string>
 #include <vector>
 
 // ─── Paths ─────────────────────────────────────────────────────────────────────
 
-// Hardcoded working folder, and the CSV file name inside it (excluded from the listing).
-static const wchar_t* FOLDER_PATH = L"C:\\Users\\Ethan Mesecher\\Desktop\\Rename";
+// Working folder ([Folders] Rename in Settings).
+static std::wstring RenameFolder() { return GetSetting(L"Folders", L"Rename"); }
+// The CSV file name inside the folder (excluded from the listing).
 static const wchar_t* CSV_NAME    = L"rename.csv";
 
 // Full path of rename.csv.
 static std::wstring CsvPath() {
-    return std::wstring(FOLDER_PATH) + L"\\" + CSV_NAME;
+    return RenameFolder() + L"\\" + CSV_NAME;
 }
 
-// ─── String / CSV helpers (same conventions as organize.cpp) ─────────────────
-
-// Returns s without leading/trailing spaces, tabs, CR, LF.
-static std::wstring Trim(const std::wstring& s) {
-    size_t a = s.find_first_not_of(L" \t\r\n");
-    if (a == std::wstring::npos) return {};
-    size_t b = s.find_last_not_of(L" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
-
-// Splits one CSV line into fields; handles quoted fields and "" escapes, drops CR.
-static std::vector<std::wstring> SplitCSV(const std::wstring& line) {
-    std::vector<std::wstring> out;
-    std::wstring field;
-    bool inQ = false;
-    for (size_t i = 0; i < line.size(); ++i) {
-        wchar_t c = line[i];
-        if (c == L'"') {
-            if (inQ && i + 1 < line.size() && line[i + 1] == L'"') { field += L'"'; ++i; }
-            else inQ = !inQ;
-        } else if (c == L',' && !inQ) {
-            out.push_back(field); field.clear();
-        } else if (c != L'\r') {
-            field += c;
-        }
-    }
-    out.push_back(field);
-    return out;
-}
-
-// Wraps a field in quotes (doubling inner quotes) if it contains a comma, quote, or newline.
-static std::wstring EscCSV(const std::wstring& s) {
-    if (s.find_first_of(L",\"\n\r") == std::wstring::npos) return s;
-    std::wstring o = L"\"";
-    for (wchar_t c : s) { if (c == L'"') o += L"\"\""; else o += c; }
-    return o + L'"';
-}
+// ─── String helpers (Trim, SplitCSV, EscCSV are in csv_text.h) ───────────────
 
 // True if name ends with ext (e.g. L".mp3"), case-insensitive.
 static bool HasExtension(const std::wstring& name, const wchar_t* ext) {
@@ -92,15 +59,24 @@ static bool ReadWholeFile(const std::wstring& path, std::vector<BYTE>& out) {
     return ok && (size_t)nr == out.size();
 }
 
-// Overwrites (CREATE_ALWAYS) path with data. Returns false on open/write failure or short write.
+// Suffix of the temp file WriteWholeFile writes before swapping it in for the real file.
+static const wchar_t* TEMP_SUFFIX = L".phxtmp";
+
+// Replaces path with data safely: writes path + TEMP_SUFFIX, then swaps it in with MoveFileEx.
+// On any failure the original file is untouched and the temp file is removed. Returns false on failure.
 static bool WriteWholeFile(const std::wstring& path, const std::vector<BYTE>& data) {
-    HANDLE hf = CreateFile(path.c_str(), GENERIC_WRITE, 0,
+    std::wstring tmp = path + TEMP_SUFFIX;
+    HANDLE hf = CreateFile(tmp.c_str(), GENERIC_WRITE, 0,
         NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hf == INVALID_HANDLE_VALUE) return false;
     DWORD nw = 0;
     BOOL ok = data.empty() ? TRUE : WriteFile(hf, data.data(), (DWORD)data.size(), &nw, NULL);
+    ok = ok && (size_t)nw == data.size() && FlushFileBuffers(hf);
     CloseHandle(hf);
-    return ok && (size_t)nw == data.size();
+    if (ok && MoveFileEx(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return true;
+    DeleteFile(tmp.c_str());
+    return false;
 }
 
 // ─── ID3 tag reading/writing ───────────────────────────────────────────────────
@@ -151,7 +127,8 @@ struct Id3v2Tag {
 };
 
 // Parses an ID3v2 tag at the start of data. Marks it unsupported if it is not v2.3/2.4,
-// overruns the file, or has flag bits 0xB0 set; otherwise collects frames until padding.
+// overruns the file, or has any of the flag bits 0xF0 set (unsynchronisation, extended header,
+// experimental, footer); otherwise collects frames until padding.
 static Id3v2Tag ParseID3v2(const std::vector<BYTE>& data) {
     Id3v2Tag t;
     if (data.size() < 10 || data[0] != 'I' || data[1] != 'D' || data[2] != '3') return t;
@@ -160,7 +137,7 @@ static Id3v2Tag ParseID3v2(const std::vector<BYTE>& data) {
     t.flags   = data[5];
     DWORD size = Synchsafe32(&data[6]);
     t.tagEnd = 10 + (size_t)size;
-    if (t.tagEnd > data.size() || t.version < 3 || t.version > 4 || (t.flags & 0xB0) != 0) {
+    if (t.tagEnd > data.size() || t.version < 3 || t.version > 4 || (t.flags & 0xF0) != 0) {
         t.unsupported = true;
         if (t.tagEnd > data.size()) t.tagEnd = data.size(); // clamp so callers stay safe
         return t;
@@ -275,7 +252,7 @@ static std::wstring ReadMp3Artist(const std::wstring& path) {
 // Writes a new artist into the MP3's tags. Returns false only on an I/O error;
 // tag structures we don't understand are simply left as-is (not an error).
 // Replaces/adds TPE1 in a supported ID3v2 tag, patches or appends an ID3v1 tag,
-// and rewrites the whole file in place. Called by ApplyRenames.
+// and rewrites the whole file via a temp file (WriteWholeFile). Called by ApplyRenames.
 static bool WriteMp3Artist(const std::wstring& path, const std::wstring& newArtist) {
     std::vector<BYTE> data;
     if (!ReadWholeFile(path, data)) return false;
@@ -345,10 +322,10 @@ static void WriteUtf8(HANDLE hOut, const std::wstring& ws) {
 // (excluding rename.csv), writes rename.csv (UTF-8 BOM) with each name and MP3 artist
 // duplicated into the "New" columns, shows instructions, then opens the CSV with ShellExecute.
 static void GenerateCSV(HWND hwndParent) {
-    CreateDirectory(FOLDER_PATH, NULL);
+    CreateDirectory(RenameFolder().c_str(), NULL);
 
     std::vector<std::wstring> names;
-    std::wstring pattern = std::wstring(FOLDER_PATH) + L"\\*.*";
+    std::wstring pattern = RenameFolder() + L"\\*.*";
     WIN32_FIND_DATA fd;
     HANDLE hFind = FindFirstFile(pattern.c_str(), &fd);
     if (hFind != INVALID_HANDLE_VALUE) {
@@ -374,7 +351,7 @@ static void GenerateCSV(HWND hwndParent) {
     for (auto& name : names) {
         std::wstring artist;
         if (HasExtension(name, L".mp3"))
-            artist = ReadMp3Artist(std::wstring(FOLDER_PATH) + L"\\" + name);
+            artist = ReadMp3Artist(RenameFolder() + L"\\" + name);
         std::wstring row = EscCSV(name) + L"," + EscCSV(name) + L"," +
                             EscCSV(artist) + L"," + EscCSV(artist) + L"\r\n";
         WriteUtf8(hOut, row);
@@ -440,7 +417,7 @@ static void ApplyRenames(HWND hwndParent) {
         std::wstring newArtist = Trim(f[3]);
         if (orig.empty()) continue;
 
-        std::wstring oldPath = std::wstring(FOLDER_PATH) + L"\\" + orig;
+        std::wstring oldPath = RenameFolder() + L"\\" + orig;
         std::wstring curPath = oldPath;
 
         if (GetFileAttributes(oldPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -450,7 +427,7 @@ static void ApplyRenames(HWND hwndParent) {
         }
 
         if (!newName.empty() && !SameNameCI(newName, orig)) {
-            std::wstring newPath = std::wstring(FOLDER_PATH) + L"\\" + newName;
+            std::wstring newPath = RenameFolder() + L"\\" + newName;
             if (GetFileAttributes(newPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
                 errors += L"Skipped (target exists): " + orig + L" -> " + newName + L"\r\n";
             } else if (MoveFile(oldPath.c_str(), newPath.c_str())) {
@@ -492,11 +469,11 @@ static LRESULT CALLBACK RenameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
         HINSTANCE hi = ((LPCREATESTRUCT)lp)->hInstance;
-        CreateWindowEx(0, L"STATIC",
-            L"Folder: C:\\Users\\Ethan Mesecher\\Desktop\\Rename\r\n\r\n"
+        std::wstring intro = L"Folder: " + RenameFolder() + L"  (change it in Settings)\r\n\r\n"
             L"1. Generate a CSV listing the files in that folder.\r\n"
             L"2. Edit \"New Filename\" / \"New Artist\" in the CSV, then save it.\r\n"
-            L"3. Click Apply to rename files and update MP3 artist tags.",
+            L"3. Click Apply to rename files and update MP3 artist tags.";
+        CreateWindowEx(0, L"STATIC", intro.c_str(),
             WS_CHILD | WS_VISIBLE | SS_LEFT,
             10, 10, 470, 90, hwnd, NULL, hi, NULL);
 

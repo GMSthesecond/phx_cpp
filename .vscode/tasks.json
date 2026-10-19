@@ -1,0 +1,20 @@
+{
+    // Terminal > Run Task... (or Ctrl+Shift+B for the default one) runs the regression tests.
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run all tests",
+            "type": "shell",
+            "command": "py -m pytest",
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run quick tests (Python only)",
+            "type": "shell",
+            "command": "py -m pytest -m \"not cpp and not app\"",
+            "group": "test",
+            "problemMatcher": []
+        }
+    ]
+}

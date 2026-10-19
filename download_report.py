@@ -1,19 +1,26 @@
-"""Data Meeting Download, launched by the "Data Meeting Download" button.
+"""Data Meeting Download, launched by the "DMD" button.
 
 Logs in to ark.phoenixenergy.com with Playwright and downloads the two data-meeting
 reports into the [Folders] DataMeetingDownload folder (settings.ini), saving each as
-<name>.MM.DD.YYYY.csv. Uses ark_common for credentials, login, session.json and downloads.
+<name>.MM.DD.YYYY.csv, then shows a box saying where. On error shows an error box
+(log: download_report_error.log in the folder). Uses ark_common for credentials, login,
+session.json and downloads.
 """
 import os
 import ark_common
 from datetime import date
-from playwright.sync_api import sync_playwright
 
 # Both reports are downloaded on every Data Meeting Download run
+_DEFAULT_DIR = r'C:\Users\Ethan Mesecher\Desktop\DMD'  # folder used when [Folders] DataMeetingDownload is unset
 _REPORT_URLS = [
     'https://ark.phoenixenergy.com/report?recordId=6789387edb62d9fbb70d6b8b',
     'https://ark.phoenixenergy.com/report?recordId=67bf95077dd3a6a940c3fe13',
 ]
+
+
+def _out_dir():
+    """The output folder: [Folders] DataMeetingDownload, else _DEFAULT_DIR."""
+    return ark_common.read_folder('DataMeetingDownload', _DEFAULT_DIR)
 
 
 def _trigger_and_save(page, out_dir, report_url):
@@ -32,30 +39,18 @@ def _trigger_and_save(page, out_dir, report_url):
 
 
 def main():
-    """Resolve the output folder, log in if needed, download both reports and save the session."""
-    out_dir = ark_common.read_folder('DataMeetingDownload', r'C:\Users\Ethan Mesecher\Desktop\DMD')
+    """Resolve the output folder, log in if needed, download both reports, save the session and
+    show where they went."""
+    out_dir = _out_dir()
     os.makedirs(out_dir, exist_ok=True)
 
-    username, password = ark_common.read_credentials()
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        ctx = browser.new_context(
-            storage_state=ark_common._SESSION if os.path.exists(ark_common._SESSION) else None,
-            accept_downloads=True
-        )
-        page = ctx.new_page()
-
-        page.goto(_REPORT_URLS[0])
-        if 'microsoftonline.com' in page.url or 'cloudflareaccess.com' in page.url:
-            ark_common.login(page, username, password)
-
+    with ark_common.ark_page(_REPORT_URLS[0]) as page:
         for url in _REPORT_URLS:
             _trigger_and_save(page, out_dir, url)
 
-        ctx.storage_state(path=ark_common._SESSION)
-        browser.close()
+    ark_common.notify('Data Meeting Download', f'Saved {len(_REPORT_URLS)} reports to:\n{out_dir}')
 
 
 if __name__ == '__main__':
-    main()
+    ark_common.run_button('Data Meeting Download', main, os.path.join(_out_dir(), 'download_report_error.log'))

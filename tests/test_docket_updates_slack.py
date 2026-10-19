@@ -1,0 +1,812 @@
+"""Docket Updates Slack button (docket_updates_slack.py; the button is disabled in the app): exports
+Cheyanne Winn's #docket-updates messages to CSV, reads the board order cases out of them and compares
+them with the RW cases report from Ark.
+
+main() runs for real against a fake Slack Web API (FakeSlack replaces the script's urlopen),
+so paging, thread replies, rate-limit retries and Slack errors are exercised without a network.
+When the messages hold cases, the RW report comes from the fake Ark (fake_ark fixture).
+The CSVs and the finish message box are checked. The case parser and the comparison are also
+tested directly on message text and small RW reports.
+"""
+import json
+from datetime import datetime
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+
+import docket_updates_slack as du
+from fakes import read_csv, write_csv
+
+_OTHER_USER = 'U0OTHERUSR'  # someone else posting in the channel
+_RW_HEADER = ['Record Id', 'Applicant', 'Case Number', 'Case Status', 'Case Type', 'Sections']  # columns of the RW report
+
+
+def ts(year, month, day, hour, minute, second, micro='000100'):
+    """Slack ts for a local send time, e.g. '1790971475.000100'."""
+    return f'{int(datetime(year, month, day, hour, minute, second).timestamp())}.{micro}'
+
+
+def msg(stamp, text, user=du._USER_ID, **extra):
+    """One Slack message dict as conversations.history returns it."""
+    return {'type': 'message', 'user': user, 'ts': stamp, 'text': text, **extra}
+
+
+class _Response:
+    """What urlopen returns: a context manager with read()."""
+
+    def __init__(self, body):
+        """body is the JSON-able dict Slack would send."""
+        self._bytes = json.dumps(body).encode('utf-8')
+
+    def __enter__(self):
+        """Usable in `with urlopen(...) as r`."""
+        return self
+
+    def __exit__(self, *exc):
+        """Nothing to close."""
+        return False
+
+    def read(self):
+        """The JSON body as bytes."""
+        return self._bytes
+
+
+class FakeSlack:
+    """Fake Slack Web API installed over docket_updates_slack.urlopen. Serves history (newest first)
+    and replies (thread ts -> [parent, replies...]) in pages of the request's limit, and records
+    every request as (method, params, Authorization header)."""
+
+    def __init__(self, history=(), replies=None):
+        """history: channel messages, newest first; replies: {thread ts: [parent, reply, ...]}."""
+        self.history = list(history)
+        self.replies = replies or {}
+        self.requests = []
+        self.rate_limit_next = 0  # this many upcoming requests get HTTP 429 first
+        self.error = None         # when set, every call answers ok: false with this body
+
+    def urlopen(self, request, timeout=None):
+        """Answer one GET like slack.com/api would."""
+        url = urlparse(request.full_url)
+        method = url.path.rsplit('/', 1)[-1]
+        params = {k: v[0] for k, v in parse_qs(url.query).items()}
+        self.requests.append((method, params, request.get_header('Authorization')))
+        if self.rate_limit_next:
+            self.rate_limit_next -= 1
+            raise HTTPError(request.full_url, 429, 'Too Many Requests', {'Retry-After': '7'}, None)
+        if self.error:
+            return _Response(dict(ok=False, **self.error))
+        assert params['channel'] == du._CHANNEL_ID
+        items = self.history if method == 'conversations.history' else self.replies[params['ts']]
+        start = int(params.get('cursor', 0))
+        end = start + int(params['limit'])
+        body = {'ok': True, 'messages': items[start:end]}
+        if end < len(items):
+            body['response_metadata'] = {'next_cursor': str(end)}
+        return _Response(body)
+
+    def calls(self, method):
+        """Params of every request made to method."""
+        return [p for m, p, _ in self.requests if m == method]
+
+
+@pytest.fixture
+def slack(monkeypatch):
+    """A FakeSlack wired into docket_updates_slack; sleeps are recorded instead of slept."""
+    fake = FakeSlack()
+    fake.slept = []
+    monkeypatch.setattr(du, 'urlopen', fake.urlopen)
+    monkeypatch.setattr(du.time, 'sleep', fake.slept.append)
+    return fake
+
+
+def run(folders):
+    """Run main() and return the export's rows (header first)."""
+    du.main()
+    return read_csv(folders['DocketUpdates'] / 'Slack_Docket_Updates.csv')
+
+
+def _box(msgboxes):
+    """Text of the single message box the run showed."""
+    assert len(msgboxes) == 1, msgboxes
+    title, text = msgboxes[0]
+    assert title == 'Docket Updates Slack'
+    return text
+
+
+def test_exports_her_messages_newest_first_with_time_ids(slack, folders, fake_ark, msgboxes):
+    """Only Cheyanne's messages are exported, newest first, each with its date/time ID and link."""
+    newest = ts(2026, 10, 2, 14, 4, 35, '113259')
+    oldest = ts(2026, 9, 30, 15, 18, 6, '880059')
+    slack.history = [
+        msg(newest, 'Board Order Updates from 10/2/2026:\nNORTH DAKOTA:\nCase 32369: GRANTED'),
+        msg(ts(2026, 10, 1, 9, 0, 0), 'not hers', user=_OTHER_USER),
+        msg(oldest, 'Board Order Updates from 9/30/2026:\nMONTANA:\nN/A'),
+    ]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER])
+    rows = run(folders)
+    assert rows[0] == ['ID', 'Date', 'Time', 'Message', 'Reply To', 'Slack TS', 'Link']
+    assert rows[1:] == [
+        ['20261002-140435-113259', '10/02/2026', '02:04:35 PM',
+         'Board Order Updates from 10/2/2026:\nNORTH DAKOTA:\nCase 32369: GRANTED', '', newest,
+         f'https://phxenergy.slack.com/archives/C0881BBSFU4/p{newest.replace(".", "")}'],
+        ['20260930-151806-880059', '09/30/2026', '03:18:06 PM',
+         'Board Order Updates from 9/30/2026:\nMONTANA:\nN/A', '', oldest,
+         f'https://phxenergy.slack.com/archives/C0881BBSFU4/p{oldest.replace(".", "")}'],
+    ]
+    text = _box(msgboxes)
+    assert 'Saved 2 message(s)' in text and '09/30/2026 to 10/02/2026' in text
+
+
+def test_sends_the_token_and_reads_only(slack, folders, msgboxes):
+    """Every request carries the settings.ini token and only calls read-only methods."""
+    slack.history = [msg(ts(2026, 10, 2, 8, 0, 0), 'hi')]
+    run(folders)
+    assert {auth for _, _, auth in slack.requests} == {'Bearer xoxp-not-a-real-token'}
+    assert {m for m, _, _ in slack.requests} <= {'conversations.history', 'conversations.replies'}
+
+
+def test_follows_pages_until_the_last(slack, folders, monkeypatch, msgboxes):
+    """History longer than one page is read to the end through next_cursor."""
+    monkeypatch.setattr(du, '_PAGE_SIZE', 2)
+    slack.history = [msg(ts(2026, 9, day, 12, 0, 0), f'day {day}') for day in range(25, 20, -1)]
+    rows = run(folders)
+    assert [r[3] for r in rows[1:]] == ['day 25', 'day 24', 'day 23', 'day 22', 'day 21']
+    assert len(slack.calls('conversations.history')) == 3
+
+
+def test_includes_her_thread_replies(slack, folders, msgboxes):
+    """Her replies in any thread are exported with Reply To = the parent's ID; the parent isn't duplicated."""
+    parent = ts(2026, 9, 29, 14, 49, 29, '550669')
+    her_reply = ts(2026, 9, 29, 16, 0, 0, '000001')
+    top = msg(parent, 'Board Order Updates from 9/29/2026', reply_count=2, thread_ts=parent)
+    slack.history = [top]
+    slack.replies = {parent: [top,
+                              msg(ts(2026, 9, 29, 15, 0, 0), 'question?', user=_OTHER_USER, thread_ts=parent),
+                              msg(her_reply, 'Corrected case 32384', thread_ts=parent)]}
+    rows = run(folders)
+    assert [(r[3], r[4]) for r in rows[1:]] == [
+        ('Corrected case 32384', '20260929-144929-550669'),
+        ('Board Order Updates from 9/29/2026', ''),
+    ]
+    assert rows[1][6].endswith(f'?thread_ts={parent}&cid=C0881BBSFU4')
+
+
+def test_replies_in_other_peoples_threads(slack, folders, msgboxes):
+    """A thread started by someone else is still searched for her replies."""
+    parent = ts(2026, 9, 28, 10, 0, 0)
+    top = msg(parent, 'Is 32380 granted?', user=_OTHER_USER, reply_count=1, thread_ts=parent)
+    slack.history = [top]
+    slack.replies = {parent: [top, msg(ts(2026, 9, 28, 11, 0, 0), 'Yes', thread_ts=parent)]}
+    rows = run(folders)
+    assert [r[3] for r in rows[1:]] == ['Yes']
+
+
+def test_broadcast_reply_is_listed_once(slack, folders, msgboxes):
+    """A reply also sent to the channel shows in both history and the thread, but is exported once."""
+    parent = ts(2026, 9, 28, 10, 0, 0)
+    broadcast = msg(ts(2026, 9, 28, 11, 0, 0), 'Also posted to channel', subtype='thread_broadcast',
+                    thread_ts=parent)
+    top = msg(parent, 'Board Order Updates', reply_count=1, thread_ts=parent)
+    slack.history = [broadcast, top]
+    slack.replies = {parent: [top, broadcast]}
+    rows = run(folders)
+    assert [r[3] for r in rows[1:]] == ['Also posted to channel', 'Board Order Updates']
+
+
+def test_skips_joins_and_other_system_messages(slack, folders, msgboxes):
+    """Channel joins, topic changes etc. by her are not messages and are left out."""
+    slack.history = [msg(ts(2026, 9, 28, 10, 0, 0), '<@U07RLNF4F44> has joined the channel',
+                         subtype='channel_join'),
+                     msg(ts(2026, 9, 27, 10, 0, 0), 'Board Order Updates', subtype='file_share')]
+    rows = run(folders)
+    assert [r[3] for r in rows[1:]] == ['Board Order Updates']
+
+
+def test_slack_markup_becomes_plain_text(slack, folders, msgboxes):
+    """&amp; &lt; &gt; are decoded and <url|label> links become their label."""
+    slack.history = [msg(ts(2026, 9, 28, 10, 0, 0),
+                         'PETRO-HUNT &amp; SONS &lt;N/A&gt; see <https://x.example/32499|order 32499> '
+                         'or <https://x.example/a>')]
+    rows = run(folders)
+    assert rows[1][3] == 'PETRO-HUNT & SONS <N/A> see order 32499 or https://x.example/a'
+
+
+def test_ids_are_unique_within_the_same_second(slack, folders, msgboxes):
+    """Two messages sent in the same second get different IDs (Slack's microseconds)."""
+    slack.history = [msg(ts(2026, 9, 28, 10, 0, 0, '000002'), 'b'), msg(ts(2026, 9, 28, 10, 0, 0, '000001'), 'a')]
+    rows = run(folders)
+    assert [r[0] for r in rows[1:]] == ['20260928-100000-000002', '20260928-100000-000001']
+
+
+def test_waits_and_retries_when_rate_limited(slack, folders, msgboxes):
+    """HTTP 429 waits Retry-After seconds and retries instead of failing."""
+    slack.history = [msg(ts(2026, 9, 28, 10, 0, 0), 'hi')]
+    slack.rate_limit_next = 2
+    rows = run(folders)
+    assert [r[3] for r in rows[1:]] == ['hi']
+    assert slack.slept == [7, 7]
+
+
+def test_gives_up_after_too_many_rate_limits(slack, folders, msgboxes):
+    """Endless 429s end in an error (the __main__ handler then shows the failure box)."""
+    slack.rate_limit_next = du._MAX_RETRIES + 1
+    with pytest.raises(HTTPError):
+        du.main()
+
+
+def test_slack_error_is_shown(slack, folders, msgboxes):
+    """ok: false from Slack (e.g. a token without channels:history) explains itself and writes nothing."""
+    slack.error = {'error': 'missing_scope', 'needed': 'channels:history'}
+    du.main()
+    text = _box(msgboxes)
+    assert 'missing_scope' in text and 'channels:history' in text
+    assert not (folders['DocketUpdates'] / 'Slack_Docket_Updates.csv').exists()
+    assert not (folders['DocketUpdates'] / 'Slack_Docket_Differences.csv').exists()
+
+
+@pytest.mark.parametrize('token', [None, '   '])
+def test_missing_token_explains_setup(slack, folders, monkeypatch, msgboxes, token):
+    """No [SlackCredentials] token (or a blank one) shows the setup steps and calls nothing."""
+    def read_slack_token():
+        """Stand-in for a settings.ini with no / a blank token."""
+        if token is None:
+            raise KeyError('SlackCredentials')
+        return token
+    monkeypatch.setattr(du.ark_common, 'read_slack_token', read_slack_token)
+    du.main()
+    text = _box(msgboxes)
+    assert '[SlackCredentials]' in text and 'channels:history' in text
+    assert slack.requests == []
+
+
+def test_locked_csv_says_close_excel(slack, folders, monkeypatch, msgboxes):
+    """If Excel has the CSV open, the box says to close it instead of failing silently."""
+    slack.history = [msg(ts(2026, 9, 28, 10, 0, 0), 'hi')]
+
+    def locked(path, header, rows):
+        """Stand-in for _write_csv on a file Excel has open."""
+        raise PermissionError(13, 'Permission denied', path)
+    monkeypatch.setattr(du, '_write_csv', locked)
+    du.main()
+    assert 'Close it in Excel' in _box(msgboxes)
+
+
+def test_no_messages_still_writes_the_header(slack, folders, msgboxes):
+    """An empty channel gives a header-only CSV and says so."""
+    rows = run(folders)
+    assert rows == [du._OUTPUT_HEADER]
+    assert 'No messages' in _box(msgboxes)
+
+
+def test_csv_opens_in_excel_with_em_dashes(slack, folders, fake_ark, msgboxes):
+    """The CSV starts with a UTF-8 BOM so Excel reads em dashes correctly."""
+    slack.history = [msg(ts(2026, 9, 28, 10, 0, 0), 'Case 33150 — GRANTED')]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER])
+    run(folders)
+    raw = (folders['DocketUpdates'] / 'Slack_Docket_Updates.csv').read_bytes()
+    assert raw.startswith(b'\xef\xbb\xbf')
+    assert 'Case 33150 — GRANTED' in raw.decode('utf-8-sig')
+
+
+def test_default_folder_is_desktop_docket_updates(slack, monkeypatch, tmp_path, msgboxes):
+    """With no [Folders] DocketUpdates, the CSV goes to Desktop\\Docket Updates, created if missing
+    (the run itself is redirected to tmp_path)."""
+    assert du._DEFAULT_DIR == r'C:\Users\Ethan Mesecher\Desktop\Docket Updates'
+    monkeypatch.setattr(du, '_DEFAULT_DIR', str(tmp_path / 'Docket Updates'))
+    monkeypatch.setattr(du.ark_common, 'read_folder', lambda key, default: default)
+    du.main()
+    assert read_csv(tmp_path / 'Docket Updates' / 'Slack_Docket_Updates.csv') == [du._OUTPUT_HEADER]
+
+
+# ---- Reading cases out of the messages ----
+
+_EXAMPLE = '''*Board Order Updates from 9/30/2026:*
+*NORTH DAKOTA:*
+ *Case 32275 (CONTINENTAL RESOURCES, INC): Pooling: GRANTED*
+*19-155N-97W-ALL*
+*30-155N-97W-ALL*
+*31-155N-97W-ALL*
+*24-155N-98W-ALL*
+
+*MONTANA:*
+*N/A*'''  # a board order message in the usual format
+
+
+def export_row(text, day=30, micro='000100', link='https://slack.example/p1'):
+    """One Slack_Docket_Updates.csv row (see _OUTPUT_HEADER) holding message text, posted 9/<day>/2026."""
+    return [f'202609{day:02d}-100000-{micro}', f'09/{day:02d}/2026', '10:00:00 AM', text, '', '1.1', link]
+
+
+def test_reads_case_fields_from_a_message():
+    """Number, applicant, type, status, state and sections come out of the usual format."""
+    [case] = du._parse_message(_EXAMPLE)
+    assert (case['number'], case['numbers'], case['applicant'], case['type'], case['status'], case['state']) == \
+        ('32275', ['32275'], 'CONTINENTAL RESOURCES, INC', 'Pooling', 'GRANTED', 'North Dakota')
+    [group] = case['groups']
+    assert group['lines'] == ['19-155N-97W-ALL', '30-155N-97W-ALL', '31-155N-97W-ALL', '24-155N-98W-ALL']
+    assert du._describe(group['cells']) == '19-155N-97W, 30-155N-97W, 31-155N-97W, 24-155N-98W'
+    assert case['notes'] == []
+
+
+@pytest.mark.parametrize('line, number, applicant, case_type, status', [
+    ('Case 31935(PHOENIX OPERATING LLC): Pooling and Spacing AMENDMENT: DISMISSED',
+     '31935', 'PHOENIX OPERATING LLC', 'Pooling and Spacing AMENDMENT', 'DISMISSED'),
+    ('Case 32078 (CONTINENTAL RESOURCES, INC.) Pooling and Spacing: DISMISSED',  # no colon after the applicant
+     '32078', 'CONTINENTAL RESOURCES, INC.', 'Pooling and Spacing', 'DISMISSED'),
+    ('Case 32843 (ENERPLUS RESOURCES (USA) CORP): Pooling and Spacing AMENDMENT: GRANTED',  # nested parentheses
+     '32843', 'ENERPLUS RESOURCES (USA) CORP', 'Pooling and Spacing AMENDMENT', 'GRANTED'),
+    ('Cases 32952 ( FORMENTERA OPERATIONS LLC): Pooling and Spacing: GRANTED',
+     '32952', 'FORMENTERA OPERATIONS LLC', 'Pooling and Spacing', 'GRANTED'),
+    ('* *Case 32591( KRAKEN OPERATING LLC) * *Pooling and Spacing: GRANTED*',  # stray asterisks
+     '32591', 'KRAKEN OPERATING LLC', 'Pooling and Spacing', 'GRANTED'),
+    ('Case 32984 (FORMENTERA OPERATIONS, LLC) : Pooling and Spacing : GRANTED',
+     '32984', 'FORMENTERA OPERATIONS, LLC', 'Pooling and Spacing', 'GRANTED'),
+    ('Case 31915 (OASIS): Pooling and Spacing: ~GRANTED~ DISMISSED',  # struck out in Slack
+     '31915', 'OASIS', 'Pooling and Spacing', 'DISMISSED'),
+    ('Case 31414 (WGO Resources, LLC): Pooling and Spacing: GRANTED141', '31414', 'WGO Resources, LLC',
+     'Pooling and Spacing', 'GRANTED'),
+    ('Case 31777 (Devon): Pooling and Spacing: Granted', '31777', 'Devon', 'Pooling and Spacing', 'GRANTED'),
+    ('Case 33001 (EOG): Pooling: GARNTED', '33001', 'EOG', 'Pooling', 'GRANTED'),  # typo seen in Slack
+    ('Case 32373 (HESS BAKKEN INVESTMENTS II, LLC): Pooling and Spacing AMENDMENT: GRANTED:',
+     '32373', 'HESS BAKKEN INVESTMENTS II, LLC', 'Pooling and Spacing AMENDMENT', 'GRANTED'),
+    ('Case 32279 (PHOENIX OPERATING LLC): Pooling and Spacing AMENDMENT:',  # no status yet
+     '32279', 'PHOENIX OPERATING LLC', 'Pooling and Spacing AMENDMENT', ''),
+    ('Case 283-2025 (KRAKEN) : AMENDMENT – CONTESTED: PARTIALLY GRANTED – 1YR EXT. INSTEAD OF 2YR',
+     '283-2025', 'KRAKEN', 'AMENDMENT – CONTESTED', 'PARTIALLY GRANTED'),
+    ('Case 33114 (SOGC, INC.(?)): Pooling and Spacing AMENDMENT: DISMISSED',
+     '33114', 'SOGC, INC.(?)', 'Pooling and Spacing AMENDMENT', 'DISMISSED'),
+])
+def test_header_variants(line, number, applicant, case_type, status):
+    """The header formats seen in #docket-updates all give the right fields."""
+    header = du._parse_header(' '.join(line.replace('*', ' ').split()))
+    assert (header['number'], header['applicant'], header['type'], header['status']) == \
+        (number, applicant, case_type, status)
+
+
+def test_header_with_two_numbers_and_an_extra_note():
+    """'196-2025 / 32-2025 FED' looks up both numbers; an extra (note) before the applicant is kept as a note."""
+    header = du._parse_header('Case 196-2025 / 32-2025 FED (CONTINENTAL) : Pooling and Spacing: GRANTED')
+    assert header['number'] == '196-2025 / 32-2025 FED' and header['numbers'] == ['196-2025', '32-2025']
+    header = du._parse_header('Case 31814 (29245?) (WHITING): Pooling & Spacing: GRANTED')
+    assert (header['applicant'], header['notes']) == ('WHITING', ['(29245?)'])
+
+
+def test_odd_status_text_is_kept_as_a_note():
+    """Extra words around the status ('PARTIALLY GRANTED – 1YR EXT...') go to the notes."""
+    header = du._parse_header('Case 283-2025 (KRAKEN) : AMENDMENT: PARTIALLY GRANTED – 1YR EXT.')
+    assert header['notes'] == ['Status text: PARTIALLY GRANTED – 1YR EXT.']
+
+
+def test_lines_that_are_not_cases_are_skipped():
+    """Board headings, N/A, No New Updates and chit-chat give no cases."""
+    text = ('Board Order Updates from 9/24/2026:\nNORTH DAKOTA:\nNo New Updates\nMONTANA:\nN/A\n'
+            "Sorry, y'all, forgot to post these yesterday\nCorrected case 32384")
+    assert du._parse_message(text) == []
+
+
+def test_status_on_the_line_below_the_header():
+    """A header ending in ':' with GRANTED on the next line takes that status."""
+    [case] = du._parse_message('Case 32601 (OASIS): Authorize Wells AMENDMENT:\nGRANTED\n(3 WELLS)\n1-150N-100W-ALL')
+    assert case['status'] == 'GRANTED' and case['notes'] == []
+    [case] = du._parse_message('*Case 32601 (OASIS): Authorize Wells AMENDMENT:*\n*\n*GRANTED*')  # blank line between
+    assert case['status'] == 'GRANTED'
+
+
+def test_status_word_further_down_is_only_a_note():
+    """A status word in a remark below the sections is not taken as the case's status."""
+    [case] = du._parse_message('Case 32279 (PHOENIX OPERATING LLC): Pooling and Spacing AMENDMENT:\n'
+                               '1-150N-100W-ALL\nPrior application DENIED')
+    assert case['status'] == '' and case['notes'] == ['Prior application DENIED']
+
+
+def test_well_groups_states_and_notes():
+    """(N Wells) lines split the sections into groups; state headings carry over; separators are
+    skipped; unit names and parenthesized remarks become notes."""
+    text = ('*NORTH DAKOTA:*\n*Case 32939 (CONTINENTAL): Pooling and Spacing AMENDMENT : GRANTED*\n'
+            '*(4 Wells-FEDOR UNIT)*\n*1-150N-100W-ALL*\n*2-150N-100W-ALL*\n*-*\n*(5 Wells)-(CHEETAH UNIT)*\n'
+            '*3-150N-100W-ALL*\n*WILLOW GRAY*\n*MONTANA:*\n13-28N-57E-ALL\n'
+            '*Case 281-2025 (COYOTE RESOURCES) : Pooling & Spacing: GRANTED*\n'
+            ' 13-28N-57E-ALL (NW1/4 Contains Indian Trust Minerals)')
+    nd, mt = du._parse_message(text)
+    assert [g['label'] for g in nd['groups']] == ['4 Wells-FEDOR UNIT', '5 Wells - CHEETAH UNIT']
+    assert [g['lines'] for g in nd['groups']] == [['1-150N-100W-ALL', '2-150N-100W-ALL'], ['3-150N-100W-ALL']]
+    assert nd['notes'] == ['WILLOW GRAY'] and nd['state'] == 'North Dakota'
+    assert mt['state'] == 'Montana' and mt['notes'] == ['NW1/4 Contains Indian Trust Minerals']
+    assert du._describe(mt['groups'][0]['cells']) == '13-28N-57E'
+
+
+def test_unreadable_section_line_is_noted():
+    """A section-looking line that can't be read is kept in the notes as 'Unread: ...'."""
+    [case] = du._parse_message('MONTANA:\nCase 1-2026 (X): Pooling: GRANTED\n5-22N-59-S2')
+    assert case['notes'] == ['Unread: 5-22N-59-S2'] and case['groups'][0]['lines'] == []
+
+
+@pytest.mark.parametrize('line, expected', [
+    ('11-156N-91W-W2', 'NW-11-156N-91W, SW-11-156N-91W'),
+    ('21-150N-91W-N2', 'NW-21-150N-91W, NE-21-150N-91W'),
+    ('17-160N-84W-NE', 'NE-17-160N-84W'),
+    ('8-160N-84W-S2SE', 'SWSE-8-160N-84W, SESE-8-160N-84W'),
+    ('30-159N-81W-SWNW', 'SWNW-30-159N-81W'),
+    ('35-154N-104W-W2W2', 'NWNW-35-154N-104W, SWNW-35-154N-104W, NWSW-35-154N-104W, SWSW-35-154N-104W'),
+    ('1-152N-96W- E2W2, E2', 'NENW-1-152N-96W, SENW-1-152N-96W, NE-1-152N-96W, '
+                             'NESW-1-152N-96W, SESW-1-152N-96W, SE-1-152N-96W'),
+    ('20-156N-92WALL', '20-156N-92W'),
+    ('27-147N-97W:ALL', '27-147N-97W'),
+    ('31-146N-98W,', '31-146N-98W'),
+    ('19-146N-99W', '19-146N-99W'),
+    ('34-156N-99W-AL', '34-156N-99W'),
+    ('5-152N-89W-ALL.', '5-152N-89W'),
+    ('10-153N-101-N2', 'NW-10-153N-101W, NE-10-153N-101W'),  # no range direction: W in North Dakota
+])
+def test_section_parts(line, expected):
+    """Every section format seen in Slack reads as the right quarters / quarter-quarters."""
+    cells, _ = du._slack_section(line, 'North Dakota')
+    assert du._describe(cells) == expected
+
+
+def test_missing_range_direction_in_montana_is_unreadable():
+    """Montana has east and west ranges, so a range with no direction can't be guessed."""
+    assert du._slack_section('5-22N-59-S2', 'Montana') is None
+
+
+def test_rw_sections_read_the_same_way():
+    """RW's NW-11-... prefix form gives the same cells as Slack's 11-...-W2; unreadable RW text stays visible."""
+    slack_cells, _ = du._slack_section('11-156N-91W-W2', 'North Dakota')
+    assert du._rw_cells('SW-11-156N-91W,  NW-11-156N-91W') == slack_cells
+    assert du._describe(du._rw_cells('Lot 3 of 11')) == 'LOT3OF11'
+
+
+def test_newest_post_of_a_case_wins():
+    """A case posted again later is taken from the newest message; the older post's status is noted."""
+    new = export_row('Case 31954 (HESS): Pooling: DISMISSED\n1-150N-100W-ALL', day=17, link='new')
+    old = export_row('Case 31954 (HESS): Pooling: GRANTED\n1-150N-100W-ALL', day=9, link='old')
+    [case] = du._cases_from([new, old])
+    assert (case['status'], case['link'], case['posted']) == ('DISMISSED', 'new', '09/17/2026')
+    assert case['notes'] == ['Also posted 09/09/2026: GRANTED']
+
+
+def test_newer_post_without_sections_keeps_the_older_sections():
+    """A re-post with only a new status keeps the sections of the older post (and says where they came from)."""
+    new = export_row('Case 31954 (HESS): Pooling: DISMISSED', day=17, link='new')
+    old = export_row('Case 31954 (HESS): Pooling: GRANTED\n1-150N-100W-ALL', day=9, link='old')
+    [case] = du._cases_from([new, old])
+    assert (case['status'], case['link'], case['groups'][0]['lines']) == ('DISMISSED', 'new', ['1-150N-100W-ALL'])
+    assert case['notes'] == ['Also posted 09/09/2026: GRANTED', 'Sections from the 09/09/2026 post']
+
+
+def test_blanks_are_filled_from_the_newest_post_that_has_them():
+    """Each blank field of the winning post comes from the newest older post that has it; filled fields stay."""
+    new = export_row('Case 31954:\n1-150N-100W-ALL', day=20, link='new')
+    mid = export_row('Case 31954 (HESS): Pooling: DENIED', day=17)
+    old = export_row('Case 31954 (HESS CORP): Pooling and Spacing: GRANTED\n2-150N-100W-ALL', day=9)
+    [case] = du._cases_from([new, mid, old])
+    assert (case['status'], case['type'], case['applicant'], case['link']) == ('DENIED', 'Pooling', 'HESS', 'new')
+    assert case['groups'][0]['lines'] == ['1-150N-100W-ALL']
+    assert case['notes'] == ['Also posted 09/17/2026: DENIED', 'Also posted 09/09/2026: GRANTED',
+                             'Status from the 09/17/2026 post', 'Type from the 09/17/2026 post',
+                             'Applicant from the 09/17/2026 post']
+
+
+def test_unrecognized_status_is_not_replaced():
+    """A status that is written but not a board result (CONTINUED) is info, not a blank: it isn't filled."""
+    new = export_row('Case 31954 (HESS): Pooling: CONTINUED\n1-150N-100W-ALL', day=17)
+    old = export_row('Case 31954 (HESS): Pooling: GRANTED\n1-150N-100W-ALL', day=9)
+    [case] = du._cases_from([new, old])
+    assert case['status'] == ''
+    assert case['notes'] == ['Status text: CONTINUED', 'Also posted 09/09/2026: GRANTED']
+
+
+def test_case_listed_twice_in_one_message_keeps_both_blocks():
+    """Two blocks of the same case in one message are merged as separate well groups and noted."""
+    text = 'Case 32742 (X): Pooling: GRANTED\n1-150N-100W-ALL\nCase 32742 (X): Pooling: GRANTED\n2-150N-100W-ALL'
+    [case] = du._cases_from([export_row(text)])
+    assert [g['lines'] for g in case['groups']] == [['1-150N-100W-ALL'], ['2-150N-100W-ALL']]
+    assert case['notes'] == ['Listed more than once in this message']
+
+
+def test_later_mention_does_not_replace_the_post():
+    """A later reply that only mentions the case ("Case 32384 was corrected...") has no status or
+    sections, so the real post is kept and the mention is noted."""
+    mention = export_row('Case 32384 was corrected, see above', day=17, link='reply')
+    post = export_row('Case 32384 (HESS): Pooling: GRANTED\n1-150N-100W-ALL', day=9, link='post')
+    [case] = du._cases_from([mention, post])
+    assert (case['status'], case['link'], case['groups'][0]['lines']) == ('GRANTED', 'post', ['1-150N-100W-ALL'])
+    assert case['notes'] == ['Also posted 09/17/2026 as 32384 was corrected, see above: no status']
+
+
+def test_posts_sharing_a_number_are_one_case():
+    """'196-2025' posted after '196-2025 / 32-2025 FED' is the same case, and both numbers are still looked up."""
+    new = export_row('Case 196-2025 (CONTINENTAL): Pooling and Spacing: DISMISSED\n1-150N-100W-ALL', day=17)
+    old = export_row('Case 196-2025 / 32-2025 FED (CONTINENTAL): Pooling and Spacing: GRANTED\n1-150N-100W-ALL',
+                     day=9)
+    [case] = du._cases_from([new, old])
+    assert (case['number'], case['numbers'], case['status']) == ('196-2025', ['196-2025', '32-2025'], 'DISMISSED')
+    assert case['notes'] == ['Also posted 09/09/2026 as 196-2025 / 32-2025 FED: GRANTED']
+
+
+# ---- Comparing with RW ----
+
+def rw_row(number, sections, status='', case_type='Pooling', record_id=None, applicant='Phoenix Operating LLC'):
+    """One RW report row (see _RW_HEADER)."""
+    return [record_id or f'REC-{number}', applicant, number, status, case_type, sections]
+
+
+def compare_rows(tmp_path, texts, rw_rows, header=_RW_HEADER):
+    """Compare messages (newest first) with an RW report; returns (rows as lists, Result counts)."""
+    path = write_csv(str(tmp_path / 'rw.csv'), [header] + rw_rows)
+    rw, has_order = du._read_rw(path)
+    cases = du._cases_from([export_row(t, micro=f'{i:06d}') for i, t in enumerate(texts)])
+    return du._compare(cases, rw, has_order)
+
+
+def compare(tmp_path, texts, rw_rows, header=_RW_HEADER):
+    """Compare messages (newest first) with an RW report; returns (rows as dicts, Result counts)."""
+    rows, counts = compare_rows(tmp_path, texts, rw_rows, header)
+    return [dict(zip(du._DIFF_HEADER, r)) for r in rows], counts
+
+
+def not_in_rw(tmp_path, texts, rw_rows):
+    """Slack_Not_In_RW.csv rows (as dicts) for messages (newest first) compared with an RW report."""
+    rows, _ = compare_rows(tmp_path, texts, rw_rows)
+    return [dict(zip(du._MISSING_HEADER, r)) for r in du._missing_rows(rows)]
+
+
+_POOLING = 'Case 33068 (PHOENIX OPERATING LLC): Pooling: {status}\n4-158N-96W-ALL\n9-158N-96W-ALL'  # one-group case
+
+
+def test_matching_case_is_a_match(tmp_path):
+    """Same status (GRANTED = Ordered), type and sections: Match, with both sides filled in."""
+    [row], counts = compare(tmp_path, [_POOLING.format(status='GRANTED')],
+                            [rw_row('33068', '9-158N-96W, 4-158N-96W', 'Ordered')])
+    assert (row['Result'], row['Differences'], row['Record Id'], row['RW Case Number']) == \
+        ('Match', '', 'REC-33068', '33068')
+    assert (row['Slack Applicant'], row['RW Applicant']) == ('PHOENIX OPERATING LLC', 'Phoenix Operating LLC')
+    assert row['Slack Sections'] == '4-158N-96W-ALL, 9-158N-96W-ALL' and row['Missing from RW'] == ''
+    assert counts == {'Match': 1}
+
+
+@pytest.mark.parametrize('slack, rw, differs', [
+    ('GRANTED', 'Ordered', False),
+    ('GRANTED', '', True),            # RW not updated yet
+    ('GRANTED', 'Docketed', True),
+    ('PARTIALLY GRANTED', 'Ordered', False),
+    ('DENIED', 'Ordered', False),
+    ('DISMISSED', 'Dismissed', False),
+    ('DISMISSED', 'Ordered', True),
+    ('', 'Docketed', False),          # no status in Slack: nothing to compare
+])
+def test_status_mapping(tmp_path, slack, rw, differs):
+    """Slack results map to RW Case Status: GRANTED / PARTIALLY GRANTED / DENIED = Ordered, DISMISSED = Dismissed."""
+    [row], _ = compare(tmp_path, [_POOLING.format(status=slack)], [rw_row('33068', '4-158N-96W, 9-158N-96W', rw)])
+    assert row['Differences'] == ('Status' if differs else '')
+
+
+def test_order_status_is_compared_when_the_report_has_it(tmp_path):
+    """With an Order Status column, GRANTED needs Granted and DISMISSED needs it blank."""
+    header = _RW_HEADER + ['Order Status']
+    rows, _ = compare(tmp_path, [_POOLING.format(status='GRANTED'),
+                                 'Case 33069 (X): Pooling: DISMISSED\n1-150N-100W-ALL'],
+                      [rw_row('33068', '4-158N-96W, 9-158N-96W', 'Ordered') + ['Denied'],
+                       rw_row('33069', '1-150N-100W', 'Dismissed') + ['']], header=header)
+    assert [(r['Case Number'], r['Differences'], r['RW Order Status']) for r in rows] == \
+        [('33068', 'Order Status', 'Denied'), ('33069', '', '')]
+
+
+@pytest.mark.parametrize('slack_type, rw_type, differs', [
+    ('Pooling', 'Pooling', False),
+    ('Pooling', 'Establish Spacing', True),
+    ('Pooling and Spacing', 'Pooling', False),
+    ('Pooling & Spacing', 'Establish Temporary Spacing', False),
+    ('Pooling and Spacing AMENDMENT', 'Establish Overlapping Spacing', False),
+    ('Pooling and Spacing AMENDMENT', 'Increased Density', False),
+    ('Pooling and Spacing AMENDMENT', 'Commingling', True),
+    ('Pooling and Spacing AMENDMENT', 'Pooling', True),
+    ('Spacing and Pooling', 'Establish Spacing', False),          # either word order
+    ('Spacing & Pooling AMENDMENT', 'Increased Density', False),
+    ('Pooling/Spacing', 'Establish Spacing', False),
+    ('Spacing and AMENDMENTS', 'Establish Permanent Spacing', False),
+    ('Authorize Wells AMENDMENT', 'Increased Density', False),
+    ('Increased Capacity', 'Increased Density', False),
+    ('Capacity Increase', 'Increased Density', False),
+    ('Authorize Drilling EXCEPTION', 'Permit to Drill', False),
+    ('Revoke Permits', 'Show Cause', False),
+    ('Suspend and Revoke', 'Pooling', True),
+])
+def test_type_mapping(tmp_path, slack_type, rw_type, differs):
+    """Slack case types match the RW Case Types listed in _TYPE_RULES."""
+    [row], _ = compare(tmp_path, [f'Case 1 (X): {slack_type}: GRANTED\n1-150N-100W-ALL'],
+                       [rw_row('1', '1-150N-100W', 'Ordered', rw_type)])
+    assert row['Differences'] == ('Type' if differs else '')
+
+
+def test_unmapped_type_is_not_compared(tmp_path):
+    """Redefine Field Limits has no RW type: not counted as a difference, noted instead."""
+    [row], _ = compare(tmp_path, ['Case 1 (X): Redefine Field Limits-GRASSY BUTTE: GRANTED\n1-150N-100W-ALL'],
+                       [rw_row('1', '1-150N-100W', 'Ordered', 'Establish Spacing')])
+    assert row['Result'] == 'Match' and row['Notes'] == 'Type not compared'
+
+
+def test_section_differences_are_listed(tmp_path):
+    """Different sections: Differs on Sections, with what RW is missing and what it has extra."""
+    [row], _ = compare(tmp_path, [_POOLING.format(status='GRANTED')],
+                       [rw_row('33068', '4-158N-96W, NW-9-158N-96W, 16-158N-96W', 'Ordered')])
+    assert (row['Result'], row['Differences']) == ('Differs', 'Sections')
+    assert row['Missing from RW'] == 'NE-9-158N-96W, SW-9-158N-96W, SE-9-158N-96W'
+    assert row['Extra in RW'] == '16-158N-96W'
+
+
+def test_half_sections_match_rw_quarters(tmp_path):
+    """Slack's 11-156N-91W-W2 is the same land as RW's NW-11 and SW-11."""
+    [row], _ = compare(tmp_path, ['Case 33102 (HESS): Pooling: DISMISSED\n10-156N-91W-ALL\n11-156N-91W-W2'],
+                       [rw_row('33102', '10-156N-91W, NW-11-156N-91W, SW-11-156N-91W', 'Dismissed')])
+    assert row['Result'] == 'Match'
+
+
+_GROUPED = ('Case 32840 (ENERPLUS): Pooling and Spacing AMENDMENT: GRANTED\n'
+            '(4 WELLS)\n13-144N-95W-ALL\n16-144N-94W-ALL\n(4 WELLS)\n24-144N-95W-ALL\n19-144N-94W-ALL')  # two well groups
+
+
+def test_well_groups_pair_with_sub_cases_by_sections(tmp_path):
+    """Each (N Wells) group pairs with the sub-case that has its sections, whatever the numbering."""
+    rows, counts = compare(tmp_path, [_GROUPED], [
+        rw_row('32840-1', '19-144N-94W, 24-144N-95W', 'Ordered', 'Establish Overlapping Spacing'),
+        rw_row('32840-2', '13-144N-95W, 16-144N-94W', 'Ordered', 'Establish Overlapping Spacing')])
+    assert [(r['Group'], r['RW Case Number'], r['Result']) for r in rows] == \
+        [('1 of 2 (4 WELLS)', '32840-2', 'Match'), ('2 of 2 (4 WELLS)', '32840-1', 'Match')]
+    assert counts == {'Match': 2}
+
+
+def test_well_group_falls_back_to_its_position(tmp_path):
+    """A group whose sections match no sub-case pairs with sub-case <number>-k by position and differs."""
+    rows, _ = compare(tmp_path, [_GROUPED], [
+        rw_row('32840-1', '13-144N-95W, 16-144N-94W', 'Ordered', 'Establish Spacing'),
+        rw_row('32840-2', '24-144N-95W, 9-144N-94W', 'Ordered', 'Establish Spacing')])
+    assert [(r['RW Case Number'], r['Differences'], r['Missing from RW'], r['Extra in RW']) for r in rows] == \
+        [('32840-1', '', '', ''), ('32840-2', 'Sections', '19-144N-94W', '9-144N-94W')]
+
+
+def test_cases_missing_from_rw_and_leftover_sub_cases(tmp_path):
+    """A case RW doesn't have is Not in RW; a plain sub-case no group paired with is Not in message;
+    unpaired Roman-numeral field-rules sub-cases are left out."""
+    rows, counts = compare(tmp_path, [_GROUPED + '\nCase 32275 (CONTINENTAL): Pooling: GRANTED\n19-155N-97W-ALL'], [
+        rw_row('32840-1', '13-144N-95W, 16-144N-94W', 'Ordered', 'Establish Spacing'),
+        rw_row('32840-2', '19-144N-94W, 24-144N-95W', 'Ordered', 'Establish Spacing'),
+        rw_row('32840-3', '1-144N-94W', 'Ordered', 'Establish Spacing'),
+        rw_row('32840-II-1', '2-144N-94W', 'Ordered', 'Establish Spacing')])
+    assert [(r['Case Number'], r['RW Case Number'], r['Result']) for r in rows] == [
+        ('32840', '32840-1', 'Match'), ('32840', '32840-2', 'Match'), ('32840', '32840-3', 'Not in message'),
+        ('32275', '', 'Not in RW')]
+    assert rows[3]['Slack Sections'] == '19-155N-97W-ALL'
+    assert counts == {'Match': 2, 'Not in message': 1, 'Not in RW': 1}
+
+
+def test_duplicate_rw_records_are_both_compared(tmp_path):
+    """Two RW records with the same case number and sections each get a row."""
+    rows, _ = compare(tmp_path, [_POOLING.format(status='GRANTED')],
+                      [rw_row('33068', '4-158N-96W, 9-158N-96W', 'Ordered', record_id='A'),
+                       rw_row('33068', '9-158N-96W, 4-158N-96W', '', record_id='B')])
+    assert [(r['Record Id'], r['Result']) for r in rows] == [('A', 'Match'), ('B', 'Differs')]
+
+
+def test_single_group_takes_every_unmatched_sub_case(tmp_path):
+    """One group with sections matching no sub-case is compared with every sub-case of the case."""
+    rows, _ = compare(tmp_path, ['Case 33114 (SOGC): Pooling and Spacing AMENDMENT: DISMISSED\n1-150N-100W-ALL'],
+                      [rw_row('33114-1', '2-150N-100W', '', 'Establish Overlapping Spacing'),
+                       rw_row('33114-2', '3-150N-100W', '', 'Establish Overlapping Spacing')])
+    assert [(r['RW Case Number'], r['Differences']) for r in rows] == \
+        [('33114-1', 'Status, Sections'), ('33114-2', 'Status, Sections')]
+
+
+def test_case_without_sections_skips_the_section_check(tmp_path):
+    """A case listed with no sections is compared on status and type only, and says so."""
+    [row], _ = compare(tmp_path, ['Case 32201 (ND): Pooling: GRANTED'], [rw_row('32201', '1-150N-100W', 'Ordered')])
+    assert row['Result'] == 'Match' and row['Notes'] == 'No sections in the message'
+
+
+def test_rw_continuation_rows_add_sections(tmp_path):
+    """A report row with a blank Record Id adds its Sections to the case above it."""
+    [row], _ = compare(tmp_path, [_POOLING.format(status='GRANTED')],
+                       [rw_row('33068', '4-158N-96W', 'Ordered'), ['', '', '', '', '', '9-158N-96W']])
+    assert row['Result'] == 'Match' and row['RW Sections'] == '4-158N-96W, 9-158N-96W'
+
+
+# ---- Cases not in RW (Slack_Not_In_RW.csv) ----
+
+def test_not_in_rw_lists_the_slack_side(tmp_path):
+    """Only Not in RW cases are listed, with the Slack fields, the state as two letters and the
+    sections as written; a case RW has is left out."""
+    rows = not_in_rw(tmp_path, [
+        'NORTH DAKOTA:\n' + _POOLING.format(status='GRANTED') +
+        '\nCase 32275 (CONTINENTAL): Pooling and Spacing: DENIED\n19-155N-97W-ALL\n20-155N-97W-W2\n'
+        'MONTANA:\nCase 85-2026 (KRAKEN): Spacing: DISMISSED\n1-25N-58E-ALL'],
+        [rw_row('33068', '4-158N-96W, 9-158N-96W', 'Ordered')])
+    assert rows == [
+        {'Case Number': '32275', 'State': 'ND', 'Applicant': 'CONTINENTAL', 'Case Type': 'Pooling and Spacing',
+         'Case Status': 'Ordered', 'Order Status': 'Denied', 'Sections': '19-155N-97W-ALL, 20-155N-97W-W2'},
+        {'Case Number': '85-2026', 'State': 'MT', 'Applicant': 'KRAKEN', 'Case Type': 'Spacing',
+         'Case Status': 'Dismissed', 'Order Status': '', 'Sections': '1-25N-58E-ALL'}]
+
+
+@pytest.mark.parametrize('slack, case_status, order_status', [
+    ('GRANTED', 'Ordered', 'Granted'),
+    ('PARTIALLY GRANTED', 'Ordered', 'Granted'),
+    ('DENIED', 'Ordered', 'Denied'),
+    ('DISMISSED', 'Dismissed', ''),
+    ('', '', ''),                     # no status in Slack: both left blank
+])
+def test_not_in_rw_status_in_rw_terms(tmp_path, slack, case_status, order_status):
+    """The Slack result becomes RW's Case Status and Order Status (_EXPECTED_STATUS)."""
+    [row] = not_in_rw(tmp_path, [_POOLING.format(status=slack)], [])
+    assert (row['Case Status'], row['Order Status']) == (case_status, order_status)
+
+
+def test_not_in_rw_one_row_per_missing_well_group(tmp_path):
+    """Each well group RW lacks gets its own row with that group's sections; a group RW has is left out."""
+    rows = not_in_rw(tmp_path, [_GROUPED], [rw_row('32840-1', '13-144N-95W, 16-144N-94W', 'Ordered')])
+    assert [(r['Case Number'], r['Sections']) for r in rows] == [('32840', '24-144N-95W-ALL, 19-144N-94W-ALL')]
+
+
+@pytest.mark.parametrize('heading, state', [
+    ('', ''),                         # no state heading above the case
+    ('WYOMING:\n', 'WY'),
+    ('SASKATCHEWAN:\n', 'Saskatchewan'),  # not a US state: kept as written
+])
+def test_not_in_rw_state_codes(tmp_path, heading, state):
+    """US state names become their postal code; a blank or unknown state is kept as is."""
+    [row] = not_in_rw(tmp_path, [heading + _POOLING.format(status='GRANTED')], [])
+    assert row['State'] == state
+
+
+# ---- The whole button with the comparison ----
+
+def test_compares_messages_with_the_rw_report(slack, folders, fake_ark, msgboxes):
+    """The RW report is downloaded to Slack_RW_Case_Info.csv and Slack_Docket_Differences.csv gets one row per pairing."""
+    slack.history = [msg(ts(2026, 9, 30, 15, 0, 0), _POOLING.format(status='GRANTED') +
+                         '\nCase 32275 (CONTINENTAL): Pooling: GRANTED\n19-155N-97W-ALL')]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER, rw_row('33068', '4-158N-96W, 9-158N-96W', '')],
+                   filename='b1e2-uuid')
+    run(folders)
+    out = folders['DocketUpdates']
+    assert fake_ark.downloads == [du._REPORT_URL]
+    assert read_csv(out / 'Slack_RW_Case_Info.csv')[1][2] == '33068'
+    rows = read_csv(out / 'Slack_Docket_Differences.csv')
+    assert rows[0] == du._DIFF_HEADER
+    assert [(r[0], r[1], r[2]) for r in rows[1:]] == [('Differs', 'Status', '33068'), ('Not in RW', '', '32275')]
+    assert read_csv(out / 'Slack_Not_In_RW.csv') == [du._MISSING_HEADER,
+                                               ['32275', '', 'CONTINENTAL', 'Pooling', 'Ordered', 'Granted',
+                                                '19-155N-97W-ALL']]
+    text = _box(msgboxes)
+    assert 'Saved 1 message(s)' in text
+    assert 'Compared 2 case(s) from the messages with 1 RW case(s): 0 match, 1 differ, 1 not in RW' in text
+    assert str(out / 'Slack_Docket_Differences.csv') in text
+    assert str(out / 'Slack_Not_In_RW.csv') in text
+
+
+def test_no_cases_means_no_ark_download(slack, folders, fake_ark, msgboxes):
+    """Messages without any case don't open Ark; the differences and Not in RW CSVs are header-only
+    and the box says so."""
+    slack.history = [msg(ts(2026, 9, 24, 13, 0, 0), 'Board Order Updates from 9/24/2026:\nNORTH DAKOTA:\nN/A')]
+    run(folders)
+    assert fake_ark.downloads == []
+    assert read_csv(folders['DocketUpdates'] / 'Slack_Docket_Differences.csv') == [du._DIFF_HEADER]
+    assert read_csv(folders['DocketUpdates'] / 'Slack_Not_In_RW.csv') == [du._MISSING_HEADER]
+    assert 'No board order cases found' in _box(msgboxes)
+
+
+@pytest.mark.parametrize('locked', ['Slack_Docket_Differences.csv', 'Slack_Not_In_RW.csv'])
+def test_locked_comparison_csv_says_close_excel(slack, folders, fake_ark, monkeypatch, msgboxes, locked):
+    """If Excel has Slack_Docket_Differences.csv or Slack_Not_In_RW.csv open, the box names that file."""
+    slack.history = [msg(ts(2026, 9, 30, 15, 0, 0), _POOLING.format(status='GRANTED'))]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER])
+    real_write = du._write_csv
+
+    def write(path, header, rows):
+        """_write_csv that fails on the locked file only."""
+        if path.endswith(locked):
+            raise PermissionError(13, 'Permission denied', path)
+        real_write(path, header, rows)
+    monkeypatch.setattr(du, '_write_csv', write)
+    du.main()
+    text = _box(msgboxes)
+    assert locked in text and 'Close it in Excel' in text

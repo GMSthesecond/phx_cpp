@@ -1,23 +1,26 @@
 """Builds one zipped polygon shapefile per operator from Units.csv, for upload to drillinginfo.
-Launched by the "Map" button (step 1; main.cpp then runs map_uploader.py).
+Launched by the "Maps" button (step 1; main.cpp then runs map_uploader.py).
 Reads Units.csv in the Maps folder ([Folders] Maps) and resolves each unit's STRs (with optional
 aliquot parts) to section/quarter-quarter geometry via BLM's PLSS ArcGIS REST service.
 Writes "<YYYY.MM.DD>. <Operator>.zip" (.shp/.shx/.dbf/.prj/.cpg) into the Maps folder and shows
-a summary message box. Depends on requests, pyshp (shapefile) and shapely."""
-import ctypes
+a summary message box. Depends on requests, pyshp (shapefile) and shapely; if one is missing it
+says which to install (ark_common.missing_package)."""
 import csv
 import os
 import re
 import zipfile
 from datetime import date, timedelta
 
-import requests
-import shapefile  # pyshp
-from shapely.geometry import Polygon
-from shapely.geometry.polygon import orient
-from shapely.ops import unary_union
-
 import ark_common
+
+try:
+    import requests
+    import shapefile  # pyshp
+    from shapely.geometry import Polygon
+    from shapely.geometry.polygon import orient
+    from shapely.ops import unary_union
+except ImportError as _err:
+    ark_common.missing_package('Map Builder', _err)
 
 _MAPS_DIR = ark_common.read_folder('Maps', r'C:\Users\Ethan Mesecher\Desktop\Maps')  # input/output folder ([Folders] Maps), shared with map_uploader
 _UNITS_CSV = os.path.join(_MAPS_DIR, 'Units.csv')  # input: one row per unit (Unit #, STRs, State, Operator, ...)
@@ -97,7 +100,7 @@ _PRJ_WKT = (
 
 def _notify(message):
     """Shows a blocking "Map Builder" info message box (the only UI, since there is no console)."""
-    ctypes.windll.user32.MessageBoxW(0, message, 'Map Builder', 0x40)
+    ark_common.notify('Map Builder', message, 0x40)
 
 
 # Order Date / Expiration come out of the spreadsheet as serial day numbers (e.g.
@@ -560,7 +563,4 @@ def main():
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        _notify(f'Map Builder failed:\n{e}')
+    ark_common.run_button('Map Builder', main, os.path.join(_MAPS_DIR, 'map_builder_error.log'))

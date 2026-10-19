@@ -1,15 +1,21 @@
-// Organize: personal-finance CSV categorizer. Opened by the main window's "Organize" button.
-// Entry points: RegisterOrganizeClass, OpenOrganize. Reads Desktop\Organization\Data.CSV,
+// Organize: personal-finance CSV categorizer. Opened by the main window's "Organization" button.
+// Entry points: RegisterOrganizeClass, OpenOrganize. Works in the [Folders] Organize folder
+// (Settings; default Desktop\Organization): first rebuilds Data.CSV there from the Chase
+// exports (*Chase*.csv; skipped if there are none), then reads Data.CSV,
 // prompts (classify dialog) for unmatched descriptions, writes Organized.CSV (one row per day).
 // Rules and scrub words persist in %APPDATA%\PhoenixLandDept\organize_rules.ini
-// ([Rules] SNIPPET=colIndex, [ScrubWords] WORD=1, [Meta] ColumnSchema).
+// ([Rules] SNIPPET=colIndex, [ScrubWords] WORD=1, [Meta] ColumnSchema). If that file doesn't
+// exist yet, it is first copied from default_organize_rules.ini next to the exe (in the repo).
 #include "organize.h"
+#include "settings.h"
+#include "csv_text.h"
 #include <shlobj.h>
 #include <wchar.h>
 #include <string>
 #include <vector>
 #include <map>
 #include <regex>
+#include <algorithm>
 
 // ─── Column definitions ───────────────────────────────────────────────────────
 
@@ -22,16 +28,37 @@ static const wchar_t* const COLS[NUM_COLS] = {
     L"Wyn", L"Ruby", L"Briar", L"Mutual Aid", L"Savings"
 };
 
-// Hardcoded input (bank export) and output paths; not taken from settings.ini.
-static const wchar_t* DATA_PATH   = L"C:\\Users\\Ethan Mesecher\\Desktop\\Organization\\Data.CSV";
-static const wchar_t* OUTPUT_PATH = L"C:\\Users\\Ethan Mesecher\\Desktop\\Organization\\Organized.CSV";
+// Working folder ([Folders] Organize in Settings): holds the Chase exports (*Chase*.csv) that
+// BuildDataCsv merges into DataPath(), and the output.
+static std::wstring OrgDir() { return GetSetting(L"Folders", L"Organize"); }
+// Data.CSV: the merged Chase exports, rebuilt by BuildDataCsv and read by RunOrganize.
+static std::wstring DataPath() { return OrgDir() + L"\\Data.CSV"; }
+// Organized.CSV: RunOrganize's output, one row per day.
+static std::wstring OutputPath() { return OrgDir() + L"\\Organized.CSV"; }
 
 // ─── Rules (uppercased description → column index) ────────────────────────────
 
 // In-memory copy of [Rules]; filled by LoadRules, added to by SaveRule.
 static std::map<std::wstring, int> g_rules;
 
-// Writes the organize_rules.ini path into out (MAX_PATH); creates %APPDATA%\PhoenixLandDept if missing.
+// default_organize_rules.ini next to phxcpp.exe: the rules committed to the repo, so a fresh
+// install starts with them. Copied by SeedRulesIfMissing; the app never writes to it.
+static std::wstring DefaultRulesPath() {
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileName(NULL, exe, MAX_PATH);
+    wchar_t* slash = wcsrchr(exe, L'\\');
+    if (slash) slash[1] = L'\0';
+    return std::wstring(exe) + L"default_organize_rules.ini";
+}
+
+// Copies seed to rulesPath only if rulesPath doesn't exist yet, so learned rules are never
+// overwritten. Does nothing if seed is missing. Called by GetRulesPath.
+static void SeedRulesIfMissing(const wchar_t* rulesPath, const std::wstring& seed) {
+    CopyFile(seed.c_str(), rulesPath, TRUE);
+}
+
+// Writes the organize_rules.ini path into out (MAX_PATH); creates %APPDATA%\PhoenixLandDept if
+// missing, and seeds the INI from DefaultRulesPath() on a machine that has none.
 static void GetRulesPath(wchar_t* out) {
     wchar_t appData[MAX_PATH];
     SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, 0, appData);
@@ -39,6 +66,7 @@ static void GetRulesPath(wchar_t* out) {
     wsprintf(dir, L"%s\\PhoenixLandDept", appData);
     CreateDirectory(dir, NULL);
     wsprintf(out, L"%s\\organize_rules.ini", dir);
+    SeedRulesIfMissing(out, DefaultRulesPath());
 }
 
 // Rules are saved as description -> column INDEX, so reordering/inserting
@@ -254,14 +282,6 @@ static int ClassifyTx(HWND hwndParent, const wchar_t* date, const wchar_t* desc,
 
 // ─── String helpers ───────────────────────────────────────────────────────────
 
-// Returns s without leading/trailing spaces, tabs, CR, LF.
-static std::wstring Trim(const std::wstring& s) {
-    size_t a = s.find_first_not_of(L" \t\r\n");
-    if (a == std::wstring::npos) return {};
-    size_t b = s.find_last_not_of(L" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
-
 // Returns an uppercased copy of s.
 static std::wstring ToUpper(std::wstring s) {
     for (auto& c : s) c = (wchar_t)towupper(c);
@@ -407,29 +427,6 @@ static std::wstring ScrubDesc(const std::wstring& desc) {
     return TitleCase(s.empty() ? Trim(desc) : s); // never blank out a note entirely
 }
 
-// Minimal CSV tokenizer — handles double-quoted fields with embedded commas/quotes.
-static std::vector<std::wstring> SplitCSV(const std::wstring& line) {
-    std::vector<std::wstring> out;
-    std::wstring field;
-    bool inQ = false;
-    for (size_t i = 0; i < line.size(); ++i) {
-        wchar_t c = line[i];
-        if (c == L'"') {
-            if (inQ && i + 1 < line.size() && line[i + 1] == L'"') {
-                field += L'"'; ++i; // escaped quote inside quoted field
-            } else {
-                inQ = !inQ;
-            }
-        } else if (c == L',' && !inQ) {
-            out.push_back(field); field.clear();
-        } else if (c != L'\r') {
-            field += c;
-        }
-    }
-    out.push_back(field);
-    return out;
-}
-
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 
 // Calendar date (year, month 1-12, day 1-31).
@@ -513,55 +510,46 @@ static std::wstring FmtAmount(double v) {
     return buf;
 }
 
-// Wraps a field in quotes if it contains a comma, quote, or newline.
-static std::wstring EscCSV(const std::wstring& s) {
-    if (s.find_first_of(L",\"\n\r") == std::wstring::npos) return s;
-    std::wstring o = L"\"";
-    for (wchar_t c : s) { if (c == L'"') o += L"\"\""; else o += c; }
-    return o + L'"';
-}
-
 // ─── Rule matching ────────────────────────────────────────────────────────────
 
-// Returns the column index if any saved snippet is a substring of the uppercased
-// description, or -1 if no rule matches. First match in map (alphabetical) order wins.
+// Returns the column index of the saved snippet found in the uppercased description, or -1 if
+// none is. When several match, the longest (most specific) wins, e.g. "AMAZON PRIME" over "AMAZON";
+// equal lengths go to the first alphabetically.
 static int FindRule(const std::wstring& upperDesc) {
+    int col = -1;
+    size_t bestLen = 0;
     for (auto& kv : g_rules) {
-        if (!kv.first.empty() && upperDesc.find(kv.first) != std::wstring::npos)
-            return kv.second;
+        if (kv.first.size() > bestLen && upperDesc.find(kv.first) != std::wstring::npos) {
+            col = kv.second;
+            bestLen = kv.first.size();
+        }
     }
-    return -1;
+    return col;
 }
 
-// ─── Main organize logic ──────────────────────────────────────────────────────
-
-// Accumulated totals and notes for one calendar day of output.
-struct DayRow {
-    double       c[NUM_COLS]; // per-column summed amount
-    std::wstring notes[NUM_COLS]; // per-column: "Desc $amt; Desc $amt"
-    DayRow() { for (int i = 0; i < NUM_COLS; i++) c[i] = 0.0; }
+// Descriptions (uppercased snippets) of credit-card payments: the card side ("Payment Thank You",
+// autopay) and the checking side ("Payment to Chase card ending in 1234"). They only move money
+// between accounts, so Organize leaves them out (the card's purchases are counted instead).
+static const wchar_t* const CARD_PAYMENT_SNIPPETS[] = {
+    L"PAYMENT THANK YOU", L"AUTOMATIC PAYMENT - THANK", L"PAYMENT TO CHASE CARD",
 };
 
-// Does the whole Organize job: loads rules/scrub words, parses Data.CSV (columns found
-// by header: Posting/Post Date, Description, Amount), categorizes each transaction
-// (positive = Income, else FindRule, else ClassifyTx prompt + SaveRule), sums amounts
-// and scrubbed notes per day, and writes Organized.CSV (UTF-8 BOM) covering every day
-// of the spanned months. Shows MessageBoxes for errors and completion.
-static void RunOrganize(HWND hwndParent) {
-    LoadRules();
-    LoadScrubWords();
-
-    // Read Data.CSV
-    HANDLE hf = CreateFile(DATA_PATH, GENERIC_READ, FILE_SHARE_READ,
-        NULL, OPEN_EXISTING, 0, NULL);
-    if (hf == INVALID_HANDLE_VALUE) {
-        MessageBox(hwndParent,
-            L"Could not open Data.CSV.\n\n"
-            L"Expected location:\n"
-            L"C:\\Users\\Ethan Mesecher\\Desktop\\Organization\\Data.CSV",
-            L"Organize — Error", MB_ICONERROR);
-        return;
+// True if the uppercased description is a credit-card payment (CARD_PAYMENT_SNIPPETS).
+static bool IsCardPayment(const std::wstring& upperDesc) {
+    for (const wchar_t* s : CARD_PAYMENT_SNIPPETS) {
+        if (upperDesc.find(s) != std::wstring::npos) return true;
     }
+    return false;
+}
+
+// ─── File helpers ─────────────────────────────────────────────────────────────
+
+// Reads a UTF-8 text file (BOM optional) into lines split on LF (a trailing CR is left on).
+// Returns false if the file can't be opened.
+static bool ReadTextLines(const wchar_t* path, std::vector<std::wstring>& lines) {
+    lines.clear();
+    HANDLE hf = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hf == INVALID_HANDLE_VALUE) return false;
     DWORD fsz = GetFileSize(hf, NULL);
     std::vector<char> raw(fsz + 4, 0);
     DWORD nr = 0;
@@ -580,17 +568,176 @@ static void RunOrganize(HWND hwndParent) {
     MultiByteToWideChar(CP_UTF8, 0, src, -1, wb.data(), wlen);
     std::wstring content(wb.data());
 
-    // Split into lines.
-    std::vector<std::wstring> lines;
-    {
-        size_t pos = 0;
-        while (pos <= content.size()) {
-            size_t nl = content.find(L'\n', pos);
-            if (nl == std::wstring::npos) nl = content.size();
-            lines.push_back(content.substr(pos, nl - pos));
-            if (nl >= content.size()) break;
-            pos = nl + 1;
+    size_t pos = 0;
+    while (pos <= content.size()) {
+        size_t nl = content.find(L'\n', pos);
+        if (nl == std::wstring::npos) nl = content.size();
+        lines.push_back(content.substr(pos, nl - pos));
+        if (nl >= content.size()) break;
+        pos = nl + 1;
+    }
+    return true;
+}
+
+// Finds the "Posting Date"/"Post Date", "Description" and "Amount" columns in a CSV header line
+// (case-insensitive; "Transaction Date" is not a match). Returns false if any is missing.
+static bool FindTxColumns(const std::wstring& headerLine, int& colDate, int& colDesc, int& colAmt) {
+    colDate = colDesc = colAmt = -1;
+    auto hdr = SplitCSV(headerLine);
+    for (int i = 0; i < (int)hdr.size(); ++i) {
+        std::wstring h = ToUpper(Trim(hdr[i]));
+        if (h == L"POSTING DATE" || h == L"POST DATE") colDate = i;
+        else if (h == L"DESCRIPTION")                  colDesc = i;
+        else if (h == L"AMOUNT")                       colAmt  = i;
+    }
+    return colDate >= 0 && colDesc >= 0 && colAmt >= 0;
+}
+
+// Writes text to path as UTF-8 with a BOM (so Excel opens it correctly), replacing any old file.
+// Returns false if the file can't be created.
+static bool WriteUtf8File(const wchar_t* path, const std::wstring& text) {
+    HANDLE hOut = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hOut == INVALID_HANDLE_VALUE) return false;
+    std::string mb = "\xEF\xBB\xBF";
+    int n = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), NULL, 0, NULL, NULL);
+    if (n > 0) {
+        size_t start = mb.size();
+        mb.resize(start + n);
+        WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), &mb[start], n, NULL, NULL);
+    }
+    DWORD nw = 0;
+    WriteFile(hOut, mb.data(), (DWORD)mb.size(), &nw, NULL);
+    CloseHandle(hOut);
+    return true;
+}
+
+// ─── Data.CSV from Chase exports ──────────────────────────────────────────────
+
+// Names (not paths) of the .csv files in OrgDir() whose name contains "chase" in any case,
+// sorted alphabetically so the merge order is stable.
+static std::vector<std::wstring> FindChaseFiles() {
+    std::vector<std::wstring> names;
+    std::wstring pattern = OrgDir() + L"\\*.csv";
+    WIN32_FIND_DATA fd;
+    HANDLE h = FindFirstFile(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return names;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        std::wstring upper = ToUpper(fd.cFileName);
+        size_t n = upper.size();
+        if (n >= 4 && upper.compare(n - 4, 4, L".CSV") == 0 && upper.find(L"CHASE") != std::wstring::npos)
+            names.push_back(fd.cFileName);
+    } while (FindNextFile(h, &fd));
+    FindClose(h);
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+// Outcome of BuildDataCsv.
+enum class BuildResult { NoChaseFiles, Built, Failed };
+
+// Rebuilds DataPath() from every Chase export in OrgDir(). Each export can have its own column
+// layout; only Posting Date/Post Date (rewritten as M/D/YYYY), Description and Amount are kept,
+// in file-name order, then row order. Rows with no valid date or no description are dropped, and
+// so are card payments (a "Type" column saying Payment: money moved, not spent).
+// Overlapping exports: a row with the same date, description and amount is kept only as many
+// times as the single file that has it most, so an old export left in the folder isn't counted
+// twice while real repeat charges within one export are kept.
+// On Failed (unreadable file, missing column, Data.CSV not writable) a MessageBox has been shown
+// and Data.CSV is unchanged. On Built, fileCount and rowCount say how much went in.
+static BuildResult BuildDataCsv(HWND hwndParent, int& fileCount, int& rowCount) {
+    fileCount = rowCount = 0;
+    std::vector<std::wstring> files = FindChaseFiles();
+    if (files.empty()) return BuildResult::NoChaseFiles;
+
+    std::wstring out = L"Post Date,Description,Amount\r\n";
+    std::map<std::wstring, int> kept; // date|desc|amount -> rows written so far
+    for (auto& name : files) {
+        std::wstring path = OrgDir() + L"\\" + name;
+        std::vector<std::wstring> lines;
+        int colDate, colDesc, colAmt;
+        if (!ReadTextLines(path.c_str(), lines)) {
+            MessageBox(hwndParent, (L"Could not read the Chase export:\n" + path +
+                L"\n\nClose it if it is open in Excel, then try again.").c_str(),
+                L"Organize — Error", MB_ICONERROR);
+            return BuildResult::Failed;
         }
+        if (lines.empty() || !FindTxColumns(lines[0], colDate, colDesc, colAmt)) {
+            MessageBox(hwndParent, (L"Could not find the required columns in the Chase export:\n" + path +
+                L"\n\nExpected headers: \"Posting Date\" or \"Post Date\", \"Description\", \"Amount\".\n"
+                L"Data.CSV was not changed.").c_str(),
+                L"Organize — Error", MB_ICONERROR);
+            return BuildResult::Failed;
+        }
+        int need = 1 + max(colDate, max(colDesc, colAmt));
+        int colType = -1;  // card exports: Sale / Return / Payment / Adjustment
+        auto header = SplitCSV(Trim(lines[0]));
+        for (int c = 0; c < (int)header.size(); c++) {
+            if (ToUpper(Trim(header[c])) == L"TYPE") colType = c;
+        }
+        std::map<std::wstring, int> seen; // same key, rows seen in this file
+        for (size_t i = 1; i < lines.size(); ++i) {
+            std::wstring ln = Trim(lines[i]);
+            if (ln.empty()) continue;
+            auto f = SplitCSV(ln);
+            if ((int)f.size() < need) continue;
+            Date d{};
+            if (!ParseDate(f[colDate], d)) continue;
+            std::wstring desc = Trim(f[colDesc]);
+            if (desc.empty()) continue;
+            if (colType >= 0 && colType < (int)f.size() && ToUpper(Trim(f[colType])) == L"PAYMENT") continue;
+            std::wstring amt = Trim(f[colAmt]);
+            std::wstring key = DateKey(d) + L"|" + desc + L"|" + FmtAmount(ParseAmount(amt));
+            int n = ++seen[key];
+            if (n <= kept[key]) continue; // already written from an overlapping export
+            kept[key] = n;
+            out += DateDisplay(d) + L"," + EscCSV(desc) + L"," + EscCSV(amt) + L"\r\n";
+            rowCount++;
+        }
+        fileCount++;
+    }
+
+    if (!WriteUtf8File(DataPath().c_str(), out)) {
+        MessageBox(hwndParent, (std::wstring(L"Could not write Data.CSV:\n") + DataPath() +
+            L"\n\nClose it if it is open in Excel, then try again.").c_str(),
+            L"Organize — Error", MB_ICONERROR);
+        return BuildResult::Failed;
+    }
+    return BuildResult::Built;
+}
+
+// ─── Main organize logic ──────────────────────────────────────────────────────
+
+// Accumulated totals and notes for one calendar day of output.
+struct DayRow {
+    double       c[NUM_COLS]; // per-column summed amount
+    std::wstring notes[NUM_COLS]; // per-column: "Desc $amt; Desc $amt"
+    DayRow() { for (int i = 0; i < NUM_COLS; i++) c[i] = 0.0; }
+};
+
+// Does the whole Organize job: rebuilds Data.CSV from the Chase exports (BuildDataCsv; keeps
+// the existing Data.CSV if there are none), loads rules/scrub words, parses Data.CSV (columns
+// found by header: Posting/Post Date, Description, Amount), categorizes each transaction
+// (card payments skipped; a positive amount goes to its rule's column, so a refund reduces that
+// category, else Income; a negative one to its rule, else ClassifyTx prompt + SaveRule), sums amounts
+// and scrubbed notes per day, and writes Organized.CSV (UTF-8 BOM) covering every day
+// of the spanned months. Shows MessageBoxes for errors and completion.
+static void RunOrganize(HWND hwndParent) {
+    int chaseFiles = 0, chaseRows = 0;
+    BuildResult built = BuildDataCsv(hwndParent, chaseFiles, chaseRows);
+    if (built == BuildResult::Failed) return;
+
+    LoadRules();
+    LoadScrubWords();
+
+    // Read Data.CSV
+    std::vector<std::wstring> lines;
+    if (!ReadTextLines(DataPath().c_str(), lines)) {
+        MessageBox(hwndParent, (std::wstring(
+            L"Could not open Data.CSV, and there were no Chase exports to build it from.\n\n"
+            L"Put the Chase CSV downloads (any .csv with \"Chase\" in its name) in:\n") + OrgDir()).c_str(),
+            L"Organize — Error", MB_ICONERROR);
+        return;
     }
 
     // Parse transactions — detect column indices from header row.
@@ -604,16 +751,7 @@ static void RunOrganize(HWND hwndParent) {
     bool hasData = false;
 
     int colDate = -1, colDesc = -1, colAmt = -1;
-    if (!lines.empty()) {
-        auto hdr = SplitCSV(lines[0]);
-        for (int i = 0; i < (int)hdr.size(); ++i) {
-            std::wstring h = ToUpper(Trim(hdr[i]));
-            if (h == L"POSTING DATE" || h == L"POST DATE") colDate = i;
-            else if (h == L"DESCRIPTION")                  colDesc = i;
-            else if (h == L"AMOUNT")                       colAmt  = i;
-        }
-    }
-    if (colDate < 0 || colDesc < 0 || colAmt < 0) {
+    if (lines.empty() || !FindTxColumns(lines[0], colDate, colDesc, colAmt)) {
         MessageBox(hwndParent,
             L"Could not find required columns in Data.CSV.\n\n"
             L"Expected headers: \"Posting Date\" or \"Post Date\", \"Description\", \"Amount\".",
@@ -654,11 +792,14 @@ static void RunOrganize(HWND hwndParent) {
     std::map<std::wstring, DayRow> dayMap;
 
     for (auto& tx : txns) {
+        std::wstring upper = ToUpper(tx.desc);
+        if (IsCardPayment(upper)) continue;  // a transfer between accounts, not income or spending
         int col;
         if (tx.amount > 0.0) {
-            col = 0; // Income
+            // A refund carries its merchant's rule and offsets that category; anything else is Income
+            col = FindRule(upper);
+            if (col < 0) col = 0;
         } else {
-            std::wstring upper = ToUpper(tx.desc);
             col = FindRule(upper);
             if (col < 0) {
                 wchar_t snippet[512] = {};
@@ -678,60 +819,41 @@ static void RunOrganize(HWND hwndParent) {
         // col == IGNORE_COL: rule matched "Ignore" — skip silently, no output
     }
 
-    // Write Organized.CSV with a UTF-8 BOM so Excel opens it correctly.
-    HANDLE hOut = CreateFile(OUTPUT_PATH, GENERIC_WRITE, 0,
-        NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hOut == INVALID_HANDLE_VALUE) {
+    // Header row: Date, Income, Income Notes, Mortgage, Mortgage Notes, ...
+    std::wstring out = L"Date";
+    for (int c = 0; c < NUM_COLS; c++) {
+        out += L','; out += COLS[c];
+        out += L','; out += COLS[c]; out += L" Notes";
+    }
+    out += L"\r\n";
+
+    // One row per calendar day across the full month span.
+    for (Date cur = startD; DateLe(cur, endD); cur = NextDay(cur)) {
+        out += EscCSV(DateDisplay(cur));
+        auto it = dayMap.find(DateKey(cur));
+        for (int c = 0; c < NUM_COLS; c++) {
+            out += L',';
+            if (it != dayMap.end()) out += FmtAmount(it->second.c[c]);
+            out += L',';
+            if (it != dayMap.end()) out += EscCSV(it->second.notes[c]);
+        }
+        out += L"\r\n";
+    }
+
+    if (!WriteUtf8File(OutputPath().c_str(), out)) {
         MessageBox(hwndParent,
             L"Could not write Organized.CSV.\n\n"
-            L"Check that the Organization folder exists and is not read-only.",
+            L"Check that the Organization folder exists, and close the file if it is open in Excel.",
             L"Organize — Error", MB_ICONERROR);
         return;
     }
 
-    auto WriteW = [&](const std::wstring& ws) {
-        int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, NULL, 0, NULL, NULL);
-        if (n <= 1) return;
-        std::vector<char> mb(n);
-        WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, mb.data(), n, NULL, NULL);
-        DWORD nw = 0;
-        WriteFile(hOut, mb.data(), n - 1, &nw, NULL); // n-1: skip null terminator
-    };
-
-    const char bom[] = { '\xEF', '\xBB', '\xBF' };
-    DWORD nw = 0;
-    WriteFile(hOut, bom, 3, &nw, NULL);
-
-    // Header row: Date, Income, Income Notes, Mortgage, Mortgage Notes, ...
-    std::wstring hdr = L"Date";
-    for (int c = 0; c < NUM_COLS; c++) {
-        hdr += L','; hdr += COLS[c];
-        hdr += L','; hdr += COLS[c]; hdr += L" Notes";
-    }
-    hdr += L"\r\n";
-    WriteW(hdr);
-
-    // One row per calendar day across the full month span.
-    for (Date cur = startD; DateLe(cur, endD); cur = NextDay(cur)) {
-        std::wstring row = EscCSV(DateDisplay(cur));
-        auto it = dayMap.find(DateKey(cur));
-        for (int c = 0; c < NUM_COLS; c++) {
-            row += L',';
-            if (it != dayMap.end()) row += FmtAmount(it->second.c[c]);
-            row += L',';
-            if (it != dayMap.end()) row += EscCSV(it->second.notes[c]);
-        }
-        row += L"\r\n";
-        WriteW(row);
-    }
-
-    CloseHandle(hOut);
-
-    MessageBox(hwndParent,
-        L"Organize complete!\n\n"
-        L"Output saved to:\n"
-        L"C:\\Users\\Ethan Mesecher\\Desktop\\Organization\\Organized.CSV",
-        L"Organize — Done", MB_ICONINFORMATION);
+    std::wstring done = L"Organize complete!\n\n";
+    if (built == BuildResult::Built)
+        done += L"Data.CSV was built from " + std::to_wstring(chaseFiles) + L" Chase export(s) (" +
+                std::to_wstring(chaseRows) + L" transactions).\n\n";
+    done += std::wstring(L"Output saved to:\n") + OutputPath();
+    MessageBox(hwndParent, done.c_str(), L"Organize — Done", MB_ICONINFORMATION);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -747,7 +869,7 @@ void RegisterOrganizeClass(HINSTANCE hInstance) {
     RegisterClass(&wc);
 }
 
-// Main-window "Organize" button handler; runs RunOrganize synchronously.
+// Main-window "Organization" button handler; runs RunOrganize synchronously.
 void OpenOrganize(HWND hwndParent) {
     RunOrganize(hwndParent);
 }

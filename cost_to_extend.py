@@ -1,27 +1,27 @@
-"""Cost to Extend correction, launched by the "Cost to Extend" button.
+"""Cost to Extend correction, launched by the "C2E" button.
 
 Downloads the cost-to-extend landholding report from ark.phoenixenergy.com, finds rows
 where NMA x $/acre differs from Total Cost to Extend by more than $10, writes the fixes
 to cost_to_extend.MM.DD.YYYY.csv in the [Folders] CostToExtend folder, and uploads that
 CSV back to Ark through the Data Loader as a Landholdings Update (changes live data).
-Uses ark_common and Playwright; errors are shown in a message box.
+Also Mirror's "C2E" step (mirror_step). Uses ark_common and Playwright; errors are shown in a message box.
 """
-import ctypes
 import csv
 import os
-import re
 from datetime import date
 
 import ark_common
 
 
+_DEFAULT_DIR = r'C:\Users\Ethan Mesecher\Desktop\C2E'  # output folder used when [Folders] CostToExtend is unset
+
+
 def _notify(message):
     """Show an information message box titled Cost to Extend (the only visible error channel)."""
-    ctypes.windll.user32.MessageBoxW(0, message, 'Cost to Extend', 0x40)
+    ark_common.notify('Cost to Extend', message, 0x40)
 
 
 _REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=67f413a4878d0fb2c4cf3411'  # cost-to-extend landholdings report
-_UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'  # Ark Data Loader new-upload page
 
 
 def _to_float(s):
@@ -30,130 +30,71 @@ def _to_float(s):
     return float(s) if s else 0.0
 
 
-def _upload(page, csv_path, upload_name, dataset='Landholdings', operation='Update'):
-    """Upload csv_path through the Ark Data Loader UI as a dataset/operation job.
-
-    Clicks through the loader wizard, confirms the operation, and waits up to 2 minutes
-    for the "X of X" completion text.
-    """
-    page.goto(_UPLOAD_URL)
-    page.wait_for_load_state('networkidle')
-
-    # 1 — select the operation card (Update, Insert, etc.)
-    card_label = page.locator('p.font-semibold', has_text=operation)
-    card_label.wait_for(timeout=15_000)
-    page.wait_for_timeout(1500)
-    card_label.click()
-    page.wait_for_load_state('networkidle')
-
-    # 2 — select the dataset from the listbox
-    page.locator('[aria-haspopup="listbox"]').click(timeout=10_000)
-    page.get_by_role('option', name=dataset, exact=True).click(timeout=10_000)
-
-    # 3 — fill the upload name (close the listbox dropdown first with Escape)
-    page.keyboard.press('Escape')
-    name_input = page.locator('input.bg-neutral-gray-1')
-    name_input.wait_for(timeout=10_000)
-    name_input.click()
-    name_input.press_sequentially(upload_name)
-
-    # 4 — attach the CSV
-    page.locator('input[type="file"]').set_input_files(csv_path)
-
-    # 5 — continue to the next page
-    page.get_by_role('button', name=re.compile(r'continue', re.I)).click()
-    page.wait_for_load_state('networkidle')
-
-    # 6 — submit
-    page.get_by_role('button', name=re.compile(r'save and upload', re.I)).click()
-
-    # 7 — confirm in the popup/modal
-    confirm_btn = page.get_by_role('button', name=re.compile(rf'^{operation}$', re.I))
-    confirm_btn.wait_for(timeout=15_000)
-    confirm_btn.click()
-
-    # Wait for "X of X" completion indicator (up to 2 minutes)
-    page.get_by_text(re.compile(r'\d+ of \d+')).first.wait_for(timeout=120_000)
-    print('Upload complete.', flush=True)
-
-
 def main():
     """Download the report, build the correction CSV, and upload it if any rows need fixing.
 
     Always saves session.json and closes the browser, even on failure.
+    Returns the number of landholdings fixed and uploaded (0 = nothing to fix).
     """
-    out_dir = ark_common.read_folder('CostToExtend', r'C:\Users\Ethan Mesecher\Desktop\C2E')
+    out_dir = ark_common.read_folder('CostToExtend', _DEFAULT_DIR)
     os.makedirs(out_dir, exist_ok=True)
 
-    username, password = ark_common.read_credentials()
     today_str = date.today().strftime('%m/%d/%Y')
     today_file_str = date.today().strftime('%m.%d.%Y')
 
-    from playwright.sync_api import sync_playwright
+    
+    with ark_common.ark_page(_REPORT_URL) as page:
+        dl = ark_common.trigger_download(page, _REPORT_URL)
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        ctx = browser.new_context(
-            storage_state=ark_common._SESSION if os.path.exists(ark_common._SESSION) else None,
-            accept_downloads=True
-        )
-        try:
-            page = ctx.new_page()
+        # Move the downloaded report into the C2E folder
+        src_path = os.path.join(out_dir, dl.suggested_filename)
+        dl.save_as(src_path)
+        print(f'Downloaded: {src_path}', flush=True)
 
-            page.goto(_REPORT_URL)
-            if 'microsoftonline.com' in page.url or 'cloudflareaccess.com' in page.url:
-                ark_common.login(page, username, password)
+        rows = []
+        with open(src_path, newline='', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            next(reader, None)  # skip header row
+            for row in reader:
+                # A=Id, C=Total Cost to Extend, D=Land Holding NMA, E=$/Acre for Extension, N=Lease Notes & Additional Documentation
+                if len(row) < 14 or not row[0].strip():
+                    continue
+                record_id = row[0].strip()
+                try:
+                    total_cost = _to_float(row[2])
+                    nma = _to_float(row[3])
+                    per_acre = _to_float(row[4])
+                except ValueError:
+                    continue
+                notes = row[13]
 
-            dl = ark_common.trigger_download(page, _REPORT_URL)
+                calculated = nma * per_acre
+                if abs(calculated - total_cost) > 10:
+                    new_notes = f'{today_str} EM - Updated to match calculated cost to extend.\n\n{notes}'
+                    rows.append((record_id, calculated, new_notes))
 
-            # Move the downloaded report into the C2E folder
-            src_path = os.path.join(out_dir, dl.suggested_filename)
-            dl.save_as(src_path)
-            print(f'Downloaded: {src_path}', flush=True)
+        if not rows:
+            print('No rows exceeded the threshold — skipping export and upload.', flush=True)
+        else:
+            out_path = os.path.join(out_dir, f'cost_to_extend.{today_file_str}.csv')
+            with open(out_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Id', 'Total Cost to Extend', 'Lease Notes & Additional Documentation'])
+                writer.writerows(rows)
+            print(f'Saved {len(rows)} row(s) to: {out_path}', flush=True)
 
-            rows = []
-            with open(src_path, newline='', encoding='utf-8-sig') as f:
-                reader = csv.reader(f)
-                next(reader, None)  # skip header row
-                for row in reader:
-                    # A=Id, C=Total Cost to Extend, D=Land Holding NMA, E=$/Acre for Extension, N=Lease Notes & Additional Documentation
-                    if len(row) < 14 or not row[0].strip():
-                        continue
-                    record_id = row[0].strip()
-                    try:
-                        total_cost = _to_float(row[2])
-                        nma = _to_float(row[3])
-                        per_acre = _to_float(row[4])
-                    except ValueError:
-                        continue
-                    notes = row[13]
+            ark_common.upload(page, out_path, f'cost to extend {today_file_str}', dataset='Landholdings')
+    return len(rows)
 
-                    calculated = nma * per_acre
-                    if abs(calculated - total_cost) > 10:
-                        new_notes = f'{today_str} EM - Updated to match calculated cost to extend.\n\n{notes}'
-                        rows.append((record_id, calculated, new_notes))
 
-            if not rows:
-                print('No rows exceeded the threshold — skipping export and upload.', flush=True)
-            else:
-                out_path = os.path.join(out_dir, f'cost_to_extend.{today_file_str}.csv')
-                with open(out_path, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['Id', 'Total Cost to Extend', 'Lease Notes & Additional Documentation'])
-                    writer.writerows(rows)
-                print(f'Saved {len(rows)} row(s) to: {out_path}', flush=True)
-
-                _upload(page, out_path, f'cost to extend {today_file_str}')
-        finally:
-            # Persist whatever session now exists — including a freshly completed manual
-            # login/2FA — even if a step above failed, so a crash doesn't force the user
-            # to log in and redo 2FA again on the next run.
-            ctx.storage_state(path=ark_common._SESSION)
-            browser.close()
+def mirror_step():
+    """Mirror's C2E step: run and return (result kind, report line)."""
+    fixed = main()
+    if fixed:
+        return ark_common.UPLOADED, f'Uploaded fixes for {ark_common.plural(fixed, "landholding")}'
+    return ark_common.NOTHING, 'No cost to extend errors found'
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        _notify(f'Cost to Extend failed:\n{e}')
+    ark_common.run_button('Cost to Extend', main,
+                          os.path.join(ark_common.read_folder('CostToExtend', _DEFAULT_DIR), 'cost_to_extend_error.log'))

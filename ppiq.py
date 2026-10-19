@@ -2,17 +2,17 @@
 
 Downloads four Ark landholding reports (ark.phxcapitalgroup.com and ark.phoenixenergy.com)
 into the PPIQ folder with Playwright, then cross-checks price paid against the curative
-queue and writes the issues found to Update_Inverted.csv in the same folder.
+queue and writes the issues found to Update_Inverted.csv in the same folder ([Folders] PPIQ).
+Shows a summary box when done, or an error box (log: ppiq_error.log in the folder).
 Uses ark_common for credentials ([Credentials]), login, session.json and report downloads.
 """
 import csv
 import os
 import ark_common
 from collections import defaultdict
-from playwright.sync_api import sync_playwright
 
-# Hardcoded download/output folder (not configurable from the Settings window)
-_PPIQ_FOLDER = r"C:\Users\Ethan Mesecher\Desktop\PPIQ"
+# Download/output folder ([Folders] PPIQ, set in Settings)
+_PPIQ_FOLDER = ark_common.read_folder('PPIQ', r"C:\Users\Ethan Mesecher\Desktop\PPIQ")
 
 # (url, generation_wait_ms) — time between triggering generation and checking the notification panel
 _PPIQ_URLS = [
@@ -27,25 +27,13 @@ def _download_files():
     """Log in to Ark and download every report in _PPIQ_URLS into _PPIQ_FOLDER.
 
     Waits 30s between downloads, re-checks login when switching to the
-    phoenixenergy.com domain for the last URL, and saves the session to session.json.
+    phoenixenergy.com domain for the last URL, and saves the session to session.json
+    (ark_common.ark_page, also after an error).
     """
     os.makedirs(_PPIQ_FOLDER, exist_ok=True)
-    username, password = ark_common.read_credentials()
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        ctx = browser.new_context(
-            storage_state=ark_common._SESSION if os.path.exists(ark_common._SESSION) else None,
-            accept_downloads=True,
-        )
-        page = ctx.new_page()
-
-        # Prime session / login for phxcapitalgroup.com
-        first_url = _PPIQ_URLS[0][0]
-        page.goto(first_url)
-        if 'microsoftonline.com' in page.url or 'cloudflareaccess.com' in page.url:
-            ark_common.login(page, username, password, success_url='https://ark.phxcapitalgroup.com/**')
-
+    # Opening the first report primes the session / login for phxcapitalgroup.com
+    with ark_common.ark_page(_PPIQ_URLS[0][0], success_url='https://ark.phxcapitalgroup.com/**') as page:
         for i, (url, generation_wait_ms) in enumerate(_PPIQ_URLS):
             if i > 0:
                 page.wait_for_timeout(30_000)  # 30-second delay between downloads
@@ -53,8 +41,7 @@ def _download_files():
             # Domain switch on the last URL — check login for phoenixenergy.com
             if i == 3:
                 page.goto(url)
-                if 'microsoftonline.com' in page.url or 'cloudflareaccess.com' in page.url:
-                    ark_common.login(page, username, password, success_url='https://ark.phoenixenergy.com/**')
+                ark_common.ensure_login(page, success_url='https://ark.phoenixenergy.com/**')
 
             dl = ark_common.trigger_download(page, url, generation_wait_ms=generation_wait_ms)
             dest = os.path.join(_PPIQ_FOLDER, dl.suggested_filename)
@@ -62,8 +49,6 @@ def _download_files():
             print(f'Saved: {dest}', flush=True)
 
         page.wait_for_timeout(10_000)  # let the last download finish writing before closing
-        ctx.storage_state(path=ark_common._SESSION)
-        browser.close()
 
 
 def _run_analysis():
@@ -72,6 +57,7 @@ def _run_analysis():
     Flags landholdings with price paid but not in queue, PHX-owned landholdings with no
     price paid, queued curative offers with no price paid, and LHT values that differ
     from the landholding price paid by more than $1. One issue is kept per ID (last wins).
+    Returns the number of issues written.
     """
     paid = defaultdict(lambda: {"id": 0, "name": "", "price_paid": 0})
     queue = defaultdict(lambda: {"id": 0, "name": "", "price_paid": 0, "status": 0})
@@ -178,11 +164,13 @@ def _run_analysis():
                 error[id]["status"] = queue[id]["status"]
                 error[id]["Issue"] = "LHT Doesn't match LH Price Paid"
 
+    written = 0
     with open(output_csv_path, mode="w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(["ID", "Price Paid", "Type", "Account Name", "LH Name", "Issue", "Status"])
         for id in error:
             if error[id]["name"] != "":
+                written += 1
                 writer.writerow([
                     id,
                     error[id]["price_paid"],
@@ -193,9 +181,16 @@ def _run_analysis():
                     error[id]["status"],
                 ])
 
-    print(f"Done. {len(error)} issues written to {output_csv_path}")
+    return written
+
+
+def main():
+    """Download the reports, run the analysis and show how many issues were written."""
+    _download_files()
+    issues = _run_analysis()
+    ark_common.notify('PPIQ', f'{ark_common.plural(issues, "issue")} written to:\n'
+                              f'{os.path.join(_PPIQ_FOLDER, "Update_Inverted.csv")}')
 
 
 if __name__ == '__main__':
-    _download_files()
-    _run_analysis()
+    ark_common.run_button('PPIQ', main, os.path.join(_PPIQ_FOLDER, 'ppiq_error.log'))
