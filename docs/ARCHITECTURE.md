@@ -29,12 +29,13 @@ flowchart LR
     end
 
     subgraph py["Python scripts (py.exe, no console)"]
-        arkScripts["Ark scripts<br/>ppiq, tpp_lhpp, download_report,<br/>cost_to_extend, str_verification,<br/>close_dates, non_hbp_mi, case_matchup,<br/>case_unit_names"]
+        arkScripts["Ark scripts<br/>ppiq, tpp_lhpp, download_report,<br/>cost_to_extend, str_verification,<br/>close_dates, non_hbp_mi, case_matchup,<br/>case_unit_names, section_id_blank"]
         index["doc_inventory_roosevelt / richland / divide<br/>(wrappers of doc_inventory.py)"]
         map["map_builder → map_uploader"]
         deceased["deceased.py"]
+        qqChecker["qq_checker.py"]
         docket["docket_updates.py"]
-        docketSlack["docket_updates_slack.py<br/>(button disabled)"]
+        docketSlack["docket_updates_slack.py"]
         mirrorpy["mirror.py<br/>runs the green buttons' work in a row"]
         ark_common["ark_common.py<br/>(shared helpers)"]
         opcolors["operator_colors.py"]
@@ -55,8 +56,7 @@ flowchart LR
 
     user --> main
     main -->|opens| settings & organize & rename
-    main -->|"LaunchScript: py script.py"| arkScripts & index & map & deceased & docket
-    main -.->|"greyed out (g_disabledButtonIds)"| docketSlack
+    main -->|"LaunchScript: py script.py"| arkScripts & index & map & deceased & docket & docketSlack & qqChecker
     main -->|Mirror button| mirrorcpp
     mirrorcpp -->|"py mirror.py (stdout piped)"| mirrorpy
     mirrorpy -->|"imports, runs in order"| index & arkScripts
@@ -76,6 +76,7 @@ flowchart LR
     index --> box
     index --> desk
     deceased --> desk
+    qqChecker --> desk
     map --> blm
     map --> enverus
     map --> desk
@@ -103,8 +104,9 @@ Layout is set in `LayoutControls` (main.cpp); labels and ids are in the `buttons
 table in `WM_CREATE`. Each button is labeled with the Desktop folder its work goes to (e.g. C2E =
 `Desktop\C2E`; Mirror's archive is `Desktop\Mirror\Archive`). Each column has a header (`g_columnHeaders`): 1 **Daily**, 2 **Set Date**, 3 **As Needed**, 4 **In Progress**. **Yellow** = not implemented yet (listed in `g_unwiredButtonIds`).
 **Green** = also run by Mirror (listed in `g_mirrorSteps`; see [§5](#5-mirror)).
-**Greyed out** = works but is switched off (listed in `g_disabledButtonIds`; `WM_COMMAND` ignores it too). Its click
-handler is still in place, so removing the id from that list reactivates it.
+**Hidden** = works but is switched off: created hidden and disabled (listed in `g_hiddenButtonIds`; `WM_COMMAND`
+ignores it too). Its click handler and its `LayoutControls` line (last in its column) are still in place, so removing
+the id from that list brings it back.
 
 | Col | Button | Runs | Changes live data? |
 |---|---|---|---|
@@ -117,7 +119,8 @@ handler is still in place, so removing the id from that list reactivates it.
 | 1 | TPP-LHPP *(green)* | `tpp_lhpp.py` → `PHX_Price_Paid_Export.xlsx` + message box of exported offers with a Close Date | No |
 | 1 | C2E *(green)* | `cost_to_extend.py` | **Yes — Ark Landholdings Update** |
 | 1 | Docket Updates | `docket_updates.py`: the ND and MT sheets of the Hearing Dockets workbook in Box compared with the Ark RW cases report → `Desktop\Docket Updates\Docket_Differences.csv`, `Docket_Upload.csv` (a Cases Update for the Data Loader, **not uploaded**) and `Not_In_RW.csv` (see *Docket Updates comparison*) | No (reads Box and Ark only) |
-| 1 | Docket Updates Slack *(greyed out)* | `docket_updates_slack.py`, the Slack version of Docket Updates until 2026-10-16: Cheyanne Winn's #docket-updates messages → `Slack_Docket_Updates.csv`, their cases compared with RW → `Slack_Docket_Differences.csv`, `Slack_Not_In_RW.csv` (see *Docket Updates Slack comparison*) | No (reads Slack and Ark only) |
+| 1 | SIB *(green)* | `section_id_blank.py`: downloads Landholdings Section Id Blank EM and Section ID Getting to `[Folders] SIB`, gives each landholding with a blank Section Id the Id of the section with the same Section Name → `Section_Id_Upload.MM.DD.YYYY.csv` (Id, Section Name, Section Id), uploaded when it has rows, + a box with the counts. Names with no section in Ark, or more than one, are left alone | **Yes — Ark Landholdings Update** |
+| 1 | Docket Updates Slack | `docket_updates_slack.py`, the Slack version of Docket Updates (Docket Updates itself reads the Hearing Dockets workbook since 2026-10-16): Cheyanne Winn's #docket-updates messages → `Slack_Docket_Updates.csv`, their cases compared with RW → `Slack_Docket_Differences.csv`, `Slack_Not_In_RW.csv` (see *Docket Updates Slack comparison*) | No (reads Slack and Ark only) |
 | 1 | Settings *(bottom-left)* | `OpenSettings` (settings.cpp): every folder, the index and Hearing Dockets workbooks and the sign-ins | settings.ini |
 | 2 | PPIQ | `ppiq.py` → `Update_Inverted.csv` + a box with the issue count | No (downloads + local CSV) |
 | 2 | AOI | `str_verification.py --aoi` → `AOI MM.DD.YYYY.csv` (unverifiable Areas of Interest) + a box with the count | No |
@@ -127,7 +130,8 @@ handler is still in place, so removing the id from that list reactivates it.
 | 3 | Bring out your dead | `deceased.py` → `deceased_upload.csv` + a box with the row count | No (writes upload CSV only) |
 | 3 | Rename | `OpenRename` (rename.cpp; folder `[Folders] Rename`) | **Renames files / rewrites MP3s** |
 | 3 | Maps | `map_builder.py` then `map_uploader.py` (background thread) | **Yes — Enverus layers/workspace** |
-| 4 | ELMI, DNM, HBPNW, LE, LHP, NHBPW, SIB, UNLE, SL, HBP Wells | *(yellow — TODO)* | — |
+| 4 | ELMI, HBPNW, LE, LHP, NHBPW, UNLE, SL, HBP Wells | *(yellow — TODO)* | — |
+| 4 | QQ *(bottom)* | `qq_checker.py`: reads `QQ_Checker.csv` (saved by hand in `[Folders] QQ`) and checks each row's Tract Description and Quarter Section against its 16 quarter-quarter NMA columns (nonzero = has a value) → `QQ_Mismatches.MM.DD.YYYY.csv` (failing rows with Mismatch = Tract / Quarter Section / Both / Unreadable and a Note naming the problem) + a box with the counts | No (local CSV only) |
 
 While Mirror runs, PPIQ, AOI and DMD are disabled too (`g_lockedDuringMirror`), because
 their scripts share the Ark login (session.json) with Mirror's steps.
@@ -162,16 +166,18 @@ flowchart TD
     non_hbp_mi --> ark_common
     case_matchup -->|"read_folder, notify, run_button"| ark_common
     case_unit_names --> ark_common
+    section_id_blank --> ark_common
     map_builder -->|"read_folder, notify, run_button, missing_package"| ark_common
     map_uploader -->|"read_folder, read_enverus_credentials, notify, run_button, missing_package"| ark_common
     docket_updates -->|"read_folder, read_setting, notify, run_button, parse_date, plural, ark_page, trigger_download"| ark_common
     docket_updates_slack -->|"read_folder, read_slack_token, notify, run_button, ark_page, trigger_download"| ark_common
     deceased -->|"read_folder, notify, run_button"| ark_common
+    qq_checker -->|"read_folder, notify, run_button, plural"| ark_common
     doc_inv["doc_inventory_roosevelt / richland / divide"] --> doc_inv_core
     doc_inv_core -->|"read_folder, read_setting, run_button"| ark_common
     map_uploader --> opcolors
     mirror -->|"result kinds, plural, read_folder"| ark_common
-    mirror -->|"mirror_step() (in a child process each)"| tpp_lhpp & cost_to_extend & str_verification & close_dates & non_hbp_mi & case_unit_names
+    mirror -->|"mirror_step() (in a child process each)"| tpp_lhpp & cost_to_extend & str_verification & close_dates & non_hbp_mi & case_unit_names & section_id_blank
     mirror -->|"main() per county"| doc_inv
 ```
 
@@ -182,7 +188,7 @@ Slack with the standard library (`urllib`); both docket scripts use `playwright`
 
 ### Typical Ark script flow
 
-Used by ppiq, tpp_lhpp, download_report, cost_to_extend, str_verification, close_dates, non_hbp_mi and case_unit_names.
+Used by ppiq, tpp_lhpp, download_report, cost_to_extend, str_verification, close_dates, non_hbp_mi, case_unit_names and section_id_blank.
 
 ```mermaid
 flowchart LR
@@ -190,10 +196,11 @@ flowchart LR
     B --> C[open report URL]
     C -->|redirected to Microsoft / Cloudflare| D["ensure_login → login<br/>([Credentials])"]
     C -->|already signed in| E
-    D --> E["ark_common.trigger_download<br/>(chevron → Download → wait → notifications)"]
-    E --> F[process CSV locally]
+    D --> E["ark_common.trigger_download<br/>(chevron → Download → wait → notifications;<br/>waits while an export there is in progress)"]
+    E --> E2["ark_common.check_columns<br/>(str_verification, cost_to_extend, non_hbp_mi,<br/>case_unit_names, section_id_blank: wrong report → error)"]
+    E2 --> F[process CSV locally]
     F --> G{uploads?}
-    G -->|"cost_to_extend, close_dates, non_hbp_mi,<br/>case_unit_names (only when there are rows)"| H["ark_common.upload via Ark Data Loader<br/>dataset: Landholdings, Units or Cases<br/>(waits for the &quot;X of Y&quot; row counter, ark_common.UPLOAD_ACCEPTED;<br/>Ark finishes processing on its own)"]
+    G -->|"cost_to_extend, close_dates, non_hbp_mi,<br/>case_unit_names, section_id_blank (only when there are rows)"| H["ark_common.upload via Ark Data Loader<br/>dataset: Landholdings, Units or Cases<br/>(waits for the &quot;X of Y&quot; row counter, ark_common.UPLOAD_ACCEPTED;<br/>Ark finishes processing on its own)"]
     G -->|others| I[write output CSV / XLSX]
     H --> J["save session.json, close browser<br/>(ark_page; also after an error)"]
     I --> J
@@ -276,7 +283,7 @@ report of what each did. Clicking a green button on its own still works exactly 
    mirror.py runs inside a **kill-on-close job object**, so everything it starts (step processes,
    Chromium) ends when the job is ended or the app exits.
 3. `mirror.py` runs each step's `mirror_step()` in this order: Index, Close Date, Case Update,
-   STR, TPP-LHPP, C2E, Cases Unit Names. Each step runs in its **own child
+   STR, TPP-LHPP, C2E, Cases Unit Names, SIB. Each step runs in its **own child
    process** (`mirror.py --step <n> <lo> <hi> <label>`), **quietly** (its own message boxes are off).
    The child's output passes through to mirror.cpp, and it reports back with one `@RESULT` line.
    A step that raises (or `sys.exit`s), crashes, or is still running after **20 minutes**
@@ -341,8 +348,8 @@ leaves out empty groups:
 
 | Kind | Meaning | Steps that can return it |
 |---|---|---|
-| Uploaded | Changed live data | Index (rows added to the sheet), Close Date, Case Update, C2E, Cases Unit Names |
-| Needs review | Wrote a report to look at | STR (Section Name mismatches), TPP-LHPP (mismatches closing in the next 14 days, or with a Close Date it couldn't read) |
+| Uploaded | Changed live data | Index (rows added to the sheet), Close Date, Case Update, C2E, Cases Unit Names, SIB |
+| Needs review | Wrote a report to look at | STR (Section Name mismatches), TPP-LHPP (mismatches closing in the next 14 days, or with a Close Date it couldn't read), SIB (nothing uploaded but a Section Name matched more than one section) |
 | No changes | Ran fine, nothing to do | all |
 | Failed | Raised an error (the first line of it is shown), crashed, or was stopped at the time limit | all |
 | Stopped | Was running when the user clicked Stop | all |
@@ -426,6 +433,8 @@ All under `%APPDATA%\PhoenixLandDept\`.
 | `[Folders] CostToExtend` | Settings dialog | cost_to_extend (default `Desktop\C2E`) |
 | `[Folders] CaseMatchup` | Settings dialog | case_matchup (default `Desktop\Unit Connect to Cases`) |
 | `[Folders] CaseUnitNames` | Settings dialog | case_unit_names (default `Desktop\Cases Unit Names`) |
+| `[Folders] SIB` | Settings dialog | section_id_blank (SIB button; default `Desktop\SIB`) |
+| `[Folders] QQ` | Settings dialog | qq_checker (QQ button; default `Desktop\QQ`): holds `QQ_Checker.csv` and the output |
 | `[Folders] NonHBPMI` | Settings dialog | non_hbp_mi (Case Update button; default `Desktop\Case Update`) |
 | `[Folders] DocketUpdates` | Settings dialog | docket_updates and docket_updates_slack (default `Desktop\Docket Updates`) |
 | `[Files] HearingDockets` | Settings dialog | docket_updates: the Hearing Dockets workbook (default `C:\Cloud\Box\Land\01. Permit & Hearing Tracking\02. State Permits & Hearings\ND,MT,UT,WY - Hearing Dockets.xlsx`) |
@@ -445,7 +454,7 @@ in a password is fine (`ark_common._read_ini` turns configparser interpolation o
 
 ### Slack token
 
-Docket Updates Slack (greyed out since 2026-10-16) reads Slack as you, with a user token from a Slack app you create once:
+Docket Updates Slack (hidden 2026-10-21 to 2026-10-26, shown again since) reads Slack as you, with a user token from a Slack app you create once:
 1. https://api.slack.com/apps → **Create New App** → *From scratch* → pick the Phoenix workspace.
 2. **OAuth & Permissions** → *User Token Scopes* → add `channels:history`.
 3. **Install to Workspace** (a workspace admin may need to approve it).
@@ -510,7 +519,7 @@ flowchart LR
 
 ### Docket Updates Slack comparison
 
-The disabled Slack version (docket_updates_slack.py) reads every board order case out of the messages and compares it
+The Slack version (docket_updates_slack.py) reads every board order case out of the messages and compares it
 with the RW cases report (`_REPORT_URL`, saved as `Slack_RW_Case_Info.csv`):
 
 ```mermaid

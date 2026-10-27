@@ -57,6 +57,13 @@ Fixed 2026-10-12:
 - Mirror couldn't be cancelled: closing the app left mirror.py and the running step going unseen (no report).
   Mirror now has a Stop button, and closing the app ends the run (kill-on-close job).
 
+Fixed 2026-10-21:
+- Mirror's STR step failed with "IndexError: list index out of range": Ark hadn't finished the 33 MB Check STR
+  report after the fixed 60 s wait, so `trigger_download` took the top file in the notifications panel,
+  yesterday's units report. It now waits while any export there is in progress (`_PREPARING`) and fails after
+  10 minutes instead. STR/AOI, Cost to Extend, Case Update and Cases Unit Names also check the downloaded
+  columns (`ark_common.check_columns`), so a wrong report fails clearly instead of being read or uploaded.
+
 ## Bugs
 
 None open.
@@ -65,6 +72,9 @@ None open.
 
 - The buttons Mirror locks can't be *started* during a run, but one started just before Mirror (e.g. PPIQ
   still downloading) can still overlap a step and share session.json with it.
+- Docket Updates and Docket Updates Slack sign in to Ark through `ark_common.ark_page` (session.json) but aren't in
+  `g_lockedDuringMirror`, so they can be started during a Mirror run (xfail
+  `test_buttons_using_ark_page_are_locked_during_mirror`).
 - A step stopped at the 20-minute limit, or by the Stop button, may already have uploaded part of its work
   (Ark finishes an upload on its own once it has the rows). The report says it was stopped; check the
   Data Loader history.
@@ -73,6 +83,14 @@ None open.
   If it is an Ark step during a fresh sign-in, that sign-in isn't saved to session.json and is asked for again.
 - The 30-second Stop fallback (job ended when mirror.py doesn't report in time) and closing the app mid-run
   are tested at the C++ level (`run_script_lines_in_a_job_*`, `kill_on_close_job_*`), not by clicking the app.
+- `trigger_download`'s in-progress check reads Ark's notification wording ("We'll let you know when your file is
+  ready…", "N% Complete"), taken from screenshots on 2026-10-21 and not yet seen on a live run. If Ark rewords it,
+  a slow report is again taken too early. If a finished export keeps one of those lines, every download waits
+  10 minutes and fails.
+- Notifications are per Ark account, so an export started by hand in Ark during a run makes the step wait for it
+  too, and if it finishes first it can be taken as the newest file. The column check catches that for STR/AOI,
+  Cost to Extend, Case Update, Cases Unit Names and SIB. Close Date, TPP-LHPP, PPIQ, Docket Updates and Data Meeting
+  Download have no column check (Close Date's real report header isn't known; its raw download isn't saved).
 
 ## Settings gaps
 
@@ -88,6 +106,15 @@ None open.
   check on the first real run: the CSV's first column is `Record Id` (the other uploads use `Id`), and a case
   matching several units gets one comma-joined PHX Unit Name ("Klondike, Klondike E"), which the Data Loader may
   store as one value instead of two list entries. The Data Loader history in Ark shows how it was read.
+- SIB's Landholdings Update upload (added 2026-10-21) has only run against the fake Ark, not live. Its CSV has
+  `Id, Section Name, Section Id`; Section Name is the landholding's own value, so it should change nothing, but if
+  the Data Loader rejects that column, upload only `Id, Section Id` (as the older uploads in `Desktop\SIB\Archive`
+  did). Check the Data Loader history after the first real run.
+- QQ (added 2026-10-22) reads `QQ_Checker.csv` saved by hand in `[Folders] QQ`; it doesn't download it from Ark
+  yet. Its Tract Description reading is a heuristic: two lone terms separated by a space join ("NE NW" = NENW), so
+  a description meaning two separate quarters written that way ("NE SW" for NE plus SW) is read as one
+  quarter-quarter. Any non-aliquot word (lots, "Part", "except", acreage, typos like `SWNE9`) marks the row
+  Unreadable rather than guessing, so `Part NWNW` or `S2SE except 1 acre` need a look by hand.
 - Data Loader: `ark_common.upload` closes the browser as soon as the row counter shows, so rows Ark rejects while
   processing are never reported (an "Uploaded N" line in Mirror means N rows were sent, not N accepted).
   Check the Data Loader history in Ark if something looks off.
@@ -118,7 +145,7 @@ None open.
   Drilling Unit, …) aren't compared.
 - RW has no state column, so Docket Updates looks ND and MT numbers up in one index. A 3-digit ND number (none since
   2021) would also match MT's `NNN-YYYY` cases.
-- Docket Updates Slack (greyed out) re-reads the whole channel every run (no incremental update). It exports message
+- Docket Updates Slack re-reads the whole channel every run (no incremental update). It exports message
   text only: attached files aren't downloaded, so a file-only post has a blank Message. An edited message shows its
   latest text. Date, Time and ID use the PC's time zone, so the same message gets a different ID on a PC in another zone.
 - Docket Updates Slack's comparison finds RW records by case number only. A mistyped number in Slack gives *Not in RW*

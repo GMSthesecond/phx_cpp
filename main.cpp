@@ -34,7 +34,8 @@
 #define ID_BUTTON_TPP_LHPP     22
 #define ID_BUTTON_COST         23
 #define ID_BUTTON_DOCKET_UPDATES 51  // runs docket_updates.py (Hearing Dockets workbook vs RW)
-#define ID_BUTTON_DOCKET_UPDATES_SLACK 59  // runs docket_updates_slack.py; disabled (g_disabledButtonIds)
+#define ID_BUTTON_SIB          36  // runs section_id_blank.py; also a Mirror step
+#define ID_BUTTON_DOCKET_UPDATES_SLACK 59  // runs docket_updates_slack.py (Slack #docket-updates vs RW)
 // Column 2
 #define ID_BUTTON_PPIQ         20
 #define ID_BUTTON_AOI          11
@@ -47,15 +48,14 @@
 #define ID_BUTTON_MAP          48
 // Column 4
 #define ID_BUTTON_ELMI         30
-#define ID_BUTTON_DNM          31
 #define ID_BUTTON_HBPNW        32
 #define ID_BUTTON_LE           33
 #define ID_BUTTON_LHP          34
 #define ID_BUTTON_NHBPW        35
-#define ID_BUTTON_SIB          36
 #define ID_BUTTON_UNLE         37
 #define ID_BUTTON_SL           38
 #define ID_BUTTON_HBP_WELLS    41
+#define ID_BUTTON_QQ           60  // runs qq_checker.py (Tract Description / Quarter Section vs QQ values)
 // Index run status (hidden except while the Index button is running)
 #define ID_PROGRESS_INDEX      49
 #define ID_LABEL_INDEX_STATUS  50
@@ -81,8 +81,8 @@ static const TCHAR* const g_columnHeaders[] = {
 
 // Buttons whose click handler is not implemented yet — drawn light yellow as a visual "not done" cue
 static const int g_unwiredButtonIds[] = {
-    ID_BUTTON_ELMI, ID_BUTTON_DNM, ID_BUTTON_HBPNW, ID_BUTTON_LE, ID_BUTTON_LHP,
-    ID_BUTTON_NHBPW, ID_BUTTON_SIB, ID_BUTTON_UNLE, ID_BUTTON_SL,
+    ID_BUTTON_ELMI, ID_BUTTON_HBPNW, ID_BUTTON_LE, ID_BUTTON_LHP,
+    ID_BUTTON_NHBPW, ID_BUTTON_UNLE, ID_BUTTON_SL,
     ID_BUTTON_HBP_WELLS,
 };
 
@@ -95,16 +95,17 @@ bool IsUnwiredButton(int id) {
     return false;
 }
 
-// Working buttons shown greyed out (disabled) so they can't be clicked; WM_COMMAND also ignores them.
-// Their click handler still launches their script, so removing an id from this list is all it
-// takes to reactivate one.
-static const int g_disabledButtonIds[] = {
-    ID_BUTTON_DOCKET_UPDATES_SLACK,
+// Working buttons that are switched off: created hidden (and disabled), and WM_COMMAND ignores them.
+// Their click handler still launches their script and LayoutControls still places them (last in
+// their column), so removing an id from this list is all it takes to bring one back.
+// None are hidden now; 0 (no control's id) keeps the array non-empty, which C++ requires.
+static const int g_hiddenButtonIds[] = {
+    0,
 };
 
-// True if id is in g_disabledButtonIds. WM_CREATE disables those buttons after creating them.
-bool IsDisabledButton(int id) {
-    for (int candidate : g_disabledButtonIds) {
+// True if id is in g_hiddenButtonIds. WM_CREATE creates those buttons hidden and disabled.
+bool IsHiddenButton(int id) {
+    for (int candidate : g_hiddenButtonIds) {
         if (candidate == id) return true;
     }
     return false;
@@ -121,6 +122,7 @@ static const MirrorStep g_mirrorSteps[] = {
     { ID_BUTTON_TPP_LHPP,        false },
     { ID_BUTTON_COST,            true  },
     { ID_BUTTON_CASE_UNIT_NAMES, true  },
+    { ID_BUTTON_SIB,             true  },
 };
 
 // Buttons Mirror doesn't run but disables while it runs, because their scripts share the Ark
@@ -379,6 +381,7 @@ void LayoutControls(HWND hwnd) {
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_TPP_LHPP), c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_COST),     c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DOCKET_UPDATES), c1, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_SIB),      c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DOCKET_UPDATES_SLACK), c1, y, bw, bh, TRUE);
 
     // Settings pinned to bottom-left
@@ -414,19 +417,18 @@ void LayoutControls(HWND hwnd) {
     // Column 4
     y = y0;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_ELMI),     c4, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DNM),      c4, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_HBPNW),    c4, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_LE),       c4, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_LHP),      c4, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_NHBPW),    c4, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_SIB),      c4, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_UNLE),     c4, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_SL),       c4, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_HBP_WELLS), c4, y, bw, bh, TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_HBP_WELLS), c4, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_QQ),       c4, y, bw, bh, TRUE);
 }
 
 // Called by Windows for every event (paint, close, etc.) that happens to the main window.
-//   WM_CREATE         create fonts, title, column headers, all buttons (g_disabledButtonIds greyed out), and the
+//   WM_CREATE         create fonts, title, column headers, all buttons (g_hiddenButtonIds hidden), and the
 //                     hidden Index / Mirror progress controls
 //   WM_SIZE           re-run LayoutControls
 //   WM_CTLCOLORSTATIC give static labels the gray background
@@ -490,6 +492,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 { ID_BUTTON_TPP_LHPP,    TEXT("TPP-LHPP")             },
                 { ID_BUTTON_COST,        TEXT("C2E")                   },
                 { ID_BUTTON_DOCKET_UPDATES, TEXT("Docket Updates")     },
+                { ID_BUTTON_SIB,         TEXT("SIB")                   },
                 { ID_BUTTON_DOCKET_UPDATES_SLACK, TEXT("Docket Updates Slack") },
                 { ID_BUTTON_SETTINGS,    TEXT("Settings")              },
                 // Column 2
@@ -504,18 +507,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 { ID_BUTTON_MAP,         TEXT("Maps")                  },
                 // Column 4
                 { ID_BUTTON_ELMI,        TEXT("ELMI")                  },
-                { ID_BUTTON_DNM,         TEXT("DNM")                   },
                 { ID_BUTTON_HBPNW,       TEXT("HBPNW")                 },
                 { ID_BUTTON_LE,          TEXT("LE")                    },
                 { ID_BUTTON_LHP,         TEXT("LHP")                   },
                 { ID_BUTTON_NHBPW,       TEXT("NHBPW")                 },
-                { ID_BUTTON_SIB,         TEXT("SIB")                   },
                 { ID_BUTTON_UNLE,        TEXT("UNLE")                  },
                 { ID_BUTTON_SL,          TEXT("SL")                    },
                 { ID_BUTTON_HBP_WELLS,   TEXT("HBP Wells")             },
+                { ID_BUTTON_QQ,          TEXT("QQ")                    },
             };
             for (auto& b : buttons) {
-                DWORD style = WS_CHILD | WS_VISIBLE |
+                DWORD style = WS_CHILD | (IsHiddenButton(b.id) ? 0 : (DWORD)WS_VISIBLE) |
                     (IsUnwiredButton(b.id) || IsMirrorButton(b.id) ? (DWORD)BS_OWNERDRAW : (DWORD)BS_PUSHBUTTON);
                 HWND hBtn = CreateWindowEx(
                     0, TEXT("BUTTON"), b.label,
@@ -525,7 +527,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     ((LPCREATESTRUCT)lParam)->hInstance, NULL
                 );
                 SendMessage(hBtn, WM_SETFONT, (WPARAM)g_hButtonFont, FALSE);
-                if (IsDisabledButton(b.id)) EnableWindow(hBtn, FALSE);
+                if (IsHiddenButton(b.id)) EnableWindow(hBtn, FALSE);
             }
 
             // Index run status — created hidden, shown only while the Index button is running
@@ -599,8 +601,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return TRUE;
         }
         case WM_COMMAND: {
-            // A greyed-out button ignores mouse clicks, but a BM_CLICK sent to it still arrives here
-            if (IsDisabledButton(LOWORD(wParam))) return 0;
+            // A hidden button can't be clicked, but a BM_CLICK sent to it still arrives here
+            if (IsHiddenButton(LOWORD(wParam))) return 0;
             if (LOWORD(wParam) == ID_BUTTON_MIRROR && IsMirrorRunning()) {
                 StopMirror(hwnd);  // the button reads "Stop" while Mirror runs
             } else if (LOWORD(wParam) == ID_BUTTON_MIRROR) {
@@ -633,8 +635,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 LaunchScript(hwnd, TEXT("download_report.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_ELMI) {
                 // TODO: implement ELMI
-            } else if (LOWORD(wParam) == ID_BUTTON_DNM) {
-                // TODO: implement DNM
             } else if (LOWORD(wParam) == ID_BUTTON_HBPNW) {
                 // TODO: implement HBPNW
             } else if (LOWORD(wParam) == ID_BUTTON_LE) {
@@ -644,7 +644,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (LOWORD(wParam) == ID_BUTTON_NHBPW) {
                 // TODO: implement NHBPW
             } else if (LOWORD(wParam) == ID_BUTTON_SIB) {
-                // TODO: implement SIB
+                LaunchScript(hwnd, TEXT("section_id_blank.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_UNLE) {
                 // TODO: implement UNLE
             } else if (LOWORD(wParam) == ID_BUTTON_SL) {
@@ -653,6 +653,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 LaunchScript(hwnd, TEXT("deceased.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_HBP_WELLS) {
                 // TODO: implement HBP Wells
+            } else if (LOWORD(wParam) == ID_BUTTON_QQ) {
+                LaunchScript(hwnd, TEXT("qq_checker.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_CLOSE_DATE) {
                 LaunchScript(hwnd, TEXT("close_dates.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_NONHBP_MI) {
@@ -660,7 +662,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (LOWORD(wParam) == ID_BUTTON_DOCKET_UPDATES) {
                 LaunchScript(hwnd, TEXT("docket_updates.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_DOCKET_UPDATES_SLACK) {
-                // Only reachable once the button is taken out of g_disabledButtonIds
                 LaunchScript(hwnd, TEXT("docket_updates_slack.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_ORGANIZE) {
                 OpenOrganize(hwnd);

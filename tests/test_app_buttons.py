@@ -19,7 +19,7 @@ import pytest
 
 import mirror
 import msvc
-from buttons import BUTTONS, COLUMN_HEADERS, COLUMNS, DIALOG, DISABLED, SCRIPT, TODO, by_label
+from buttons import BUTTONS, COLUMN_HEADERS, COLUMNS, DIALOG, HIDDEN, SCRIPT, TODO, by_label
 from test_wiring import _launched_scripts
 
 pytestmark = pytest.mark.app
@@ -269,7 +269,8 @@ def test_app_compiles(app_build):
 
 
 def test_every_button_is_shown_and_laid_out(running_app):
-    """Every spec button exists, is visible, sits inside the window, and overlaps no other button.
+    """Every spec button exists; every one but the HIDDEN ones is visible, sits inside the window, and
+    overlaps no other button.
     Unfinished buttons (yellow) and the buttons Mirror runs (green) are owner-drawn."""
     buttons = running_app.buttons()
     assert sorted(buttons) == sorted(b.label for b in BUTTONS)
@@ -280,6 +281,8 @@ def test_every_button_is_shown_and_laid_out(running_app):
     _user32.ClientToScreen(running_app.main, ctypes.byref(origin))
     rects = {}
     for label, hwnd in buttons.items():
+        if by_label(label).kind == HIDDEN:
+            continue
         assert _user32.IsWindowVisible(hwnd), f'{label} is hidden'
         left, top, right, bottom = _rect(hwnd)
         assert right - left > 20 and bottom - top > 10, f'{label} has no size (missing from LayoutControls?)'
@@ -400,19 +403,19 @@ def test_unfinished_buttons_do_nothing(running_app):
     assert running_app.top_windows() == []
 
 
-def test_greyed_out_buttons_are_disabled_and_do_nothing(running_app):
-    """A DISABLED button (g_disabledButtonIds) is shown greyed out and a click launches nothing."""
+def test_hidden_buttons_are_not_shown_and_do_nothing(running_app):
+    """A HIDDEN button (g_hiddenButtonIds) is not shown, is disabled, and a BM_CLICK launches nothing."""
     buttons = running_app.buttons()
-    disabled = [b.label for b in BUTTONS if b.kind == DISABLED]
-    for label in disabled:
-        assert not _user32.IsWindowEnabled(buttons[label]), f'{label} should be greyed out'
-        assert _user32.IsWindowVisible(buttons[label]), f'{label} should still be shown'
+    hidden = [b.label for b in BUTTONS if b.kind == HIDDEN]
+    for label in hidden:
+        assert not _user32.IsWindowVisible(buttons[label]), f'{label} should be hidden'
+        assert not _user32.IsWindowEnabled(buttons[label]), f'{label} should be disabled'
         running_app.click(label)
     time.sleep(0.5)
     assert running_app.calls() == []
     assert running_app.top_windows() == []
-    others = [b.label for b in BUTTONS if b.kind != DISABLED and b.label != 'Mirror']
-    assert all(_user32.IsWindowEnabled(buttons[label]) for label in others), 'only DISABLED buttons start greyed out'
+    others = [b.label for b in BUTTONS if b.kind != HIDDEN and b.label != 'Mirror']
+    assert all(_user32.IsWindowEnabled(buttons[label]) for label in others), 'only HIDDEN buttons start disabled'
 
 
 def _box_text(box):

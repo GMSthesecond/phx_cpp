@@ -249,3 +249,13 @@ def test_mirror_step_with_nothing_to_upload(fake_ark, folders, msgboxes, upload)
     assert cun.mirror_step() == (ark_common.NOTHING, 'No case unit names to upload')
     assert upload.calls == []
     assert msgboxes == []
+
+
+def test_a_different_report_from_ark_is_not_uploaded(fake_ark, folders, msgboxes, upload):
+    """Ark handing back the wrong report for either download raises instead of matching on blank columns."""
+    fake_ark.serve(cun._UNITS_URL, [_CASES_HEADER, case('C-1')], filename='u.csv')
+    fake_ark.serve(cun._CASES_URL, [_CASES_HEADER, case('C-1')], filename='c.csv')
+
+    with pytest.raises(RuntimeError, match='units.*Record Id, Applicant, PHX Unit Name, Sections'):
+        cun.main(quiet=True)
+    assert upload.calls == []

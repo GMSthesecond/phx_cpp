@@ -7,8 +7,8 @@ since they go stale). For how the pieces fit together, see [ARCHITECTURE.md](ARC
 **Contents**
 - C++: [main.cpp](#maincpp) · [mirror.cpp](#mirrorcpp--mirrorh) · [settings.cpp](#settingscpp--settingsh) · [organize.cpp](#organizecpp--organizeh) · [rename.cpp](#renamecpp--renameh) · [csv_text.h](#csv_texth)
 - Python (shared): [ark_common.py](#ark_commonpy) · [operator_colors.py](#operator_colorspy) · [mirror.py](#mirrorpy)
-- Python (Ark): [ppiq.py](#ppiqpy) · [tpp_lhpp.py](#tpp_lhpppy) · [download_report.py](#download_reportpy) · [cost_to_extend.py](#cost_to_extendpy) · [str_verification.py](#str_verificationpy) · [close_dates.py](#close_datespy) · [non_hbp_mi.py](#non_hbp_mipy) · [case_matchup.py](#case_matchuppy) · [case_unit_names.py](#case_unit_namespy)
-- Python (other): [deceased.py](#deceasedpy) · [docket_updates.py](#docket_updatespy) · [docket_updates_slack.py](#docket_updates_slackpy) · [doc_inventory.py + county scripts](#doc_inventorypy--doc_inventory_roosevelt--richland--dividepy) · [map_builder.py](#map_builderpy) · [map_uploader.py](#map_uploaderpy)
+- Python (Ark): [ppiq.py](#ppiqpy) · [tpp_lhpp.py](#tpp_lhpppy) · [download_report.py](#download_reportpy) · [cost_to_extend.py](#cost_to_extendpy) · [str_verification.py](#str_verificationpy) · [close_dates.py](#close_datespy) · [non_hbp_mi.py](#non_hbp_mipy) · [case_matchup.py](#case_matchuppy) · [case_unit_names.py](#case_unit_namespy) · [section_id_blank.py](#section_id_blankpy)
+- Python (other): [deceased.py](#deceasedpy) · [qq_checker.py](#qq_checkerpy) · [docket_updates.py](#docket_updatespy) · [docket_updates_slack.py](#docket_updates_slackpy) · [doc_inventory.py + county scripts](#doc_inventorypy--doc_inventory_roosevelt--richland--dividepy) · [map_builder.py](#map_builderpy) · [map_uploader.py](#map_uploaderpy)
 - [Tests](#tests): shared helpers, C++ test support, test files
 
 ---
@@ -21,7 +21,7 @@ Entry point, main window, button dispatch.
 
 | Name | Kind | Description |
 |---|---|---|
-| `ID_TITLE`, `ID_BUTTON_*` | macro | Control ids for the title and each button; grouped by column. `ID_BUTTON_AOI` (11) runs `str_verification.py --aoi`; `ID_BUTTON_DOCKET_UPDATES` (51) runs `docket_updates.py`; `ID_BUTTON_DOCKET_UPDATES_SLACK` (59) runs `docket_updates_slack.py` (greyed out). |
+| `ID_TITLE`, `ID_BUTTON_*` | macro | Control ids for the title and each button; grouped by column. `ID_BUTTON_AOI` (11) runs `str_verification.py --aoi`; `ID_BUTTON_DOCKET_UPDATES` (51) runs `docket_updates.py`; `ID_BUTTON_DOCKET_UPDATES_SLACK` (59) runs `docket_updates_slack.py` (bottom of column 1); `ID_BUTTON_SIB` (36) runs `section_id_blank.py` (also a Mirror step); `ID_BUTTON_QQ` (60, bottom of column 4) runs `qq_checker.py`. |
 | `ID_PROGRESS_INDEX`, `ID_LABEL_INDEX_STATUS` | macro | Index progress bar and status label (hidden unless Index is running). |
 | `ID_BUTTON_MIRROR` (52), `ID_PROGRESS_MIRROR` (53), `ID_LABEL_MIRROR_STATUS` (54) | macro | Mirror button (top-left, outside the columns) and its progress bar / status label (hidden unless Mirror is running; same spot as Index's). |
 | `ID_COLUMN_HEADER` (55) | macro | First column-header label id; `ID_COLUMN_HEADER + i` (55-58) is the label over column i + 1. |
@@ -31,8 +31,8 @@ Entry point, main window, button dispatch.
 | `g_hwndMain` | global | The main window. |
 | `g_unwiredButtonIds` | static global | Buttons with no handler yet; drawn yellow. |
 | `IsUnwiredButton` | function | True if the id is in `g_unwiredButtonIds`; makes the button owner-drawn. |
-| `g_disabledButtonIds` | static global | Working buttons shown greyed out (Docket Updates Slack); remove an id to reactivate it. |
-| `IsDisabledButton` | function | True if the id is in `g_disabledButtonIds`; WM_CREATE disables those buttons and WM_COMMAND ignores them (a `BM_CLICK` still reaches a disabled button). |
+| `g_hiddenButtonIds` | static global | Working buttons that are switched off: created hidden and disabled; remove an id to bring it back. Holds only `0` (no control's id) while none are hidden, since C++ has no empty arrays. |
+| `IsHiddenButton` | function | True if the id is in `g_hiddenButtonIds`; WM_CREATE creates those buttons hidden and disabled, and WM_COMMAND ignores them (a `BM_CLICK` still reaches a hidden button). |
 | `g_mirrorSteps` | static global | `MirrorStep` table: the buttons Mirror runs, in order, and which upload. Must match `STEPS` in mirror.py (test_wiring checks). |
 | `g_lockedDuringMirror` | static global | PPIQ, AOI, DMD: not Mirror steps, but disabled while Mirror runs because their scripts share the Ark login (session.json). test_wiring checks every such button is a step or listed here. |
 | `IsMirrorButton` | function | True if the id is in `g_mirrorSteps`; makes the button owner-drawn (green). |
@@ -79,7 +79,7 @@ while it runs the button reads Stop. Also holds `RunScriptLines`, which Index us
 
 ### settings.cpp / settings.h
 Settings dialog: one row per folder, file and sign-in the scripts and the Organization / Rename dialogs use.
-**Opened by:** Settings. **Reads/Writes:** every `s_settings` row in settings.ini: `[Folders]` (17 keys), `[Files] IndexWorkbook` and `HearingDockets`,
+**Opened by:** Settings. **Reads/Writes:** every `s_settings` row in settings.ini: `[Folders]` (19 keys), `[Files] IndexWorkbook` and `HearingDockets`,
 `[Credentials]`, `[EnverusCredentials]`, `[SlackCredentials]` (table in [ARCHITECTURE.md](ARCHITECTURE.md#settingsini)).
 
 | Name | Kind | Description |
@@ -203,6 +203,8 @@ Standard library only at import (Playwright is imported inside `ark_page` / `log
 | `_SESSION` | constant | session.json (Playwright login state); loaded and saved by `ark_page`. |
 | `_CHEVRON_PATH` | constant | SVG path used to find Ark's report dropdown. |
 | `UPLOAD_URL` | constant | Ark Data Loader new-upload page, opened by `upload`. |
+| `_PREPARING` | constant | Regex for Ark's in-progress notification line ("We'll let you know when your file is ready…", "0–99% Complete"); `trigger_download` waits while any shows. |
+| `_POLL_MS` / `_GENERATION_TIMEOUT_MS` | constant | `trigger_download` rechecks the notifications every 5 s and gives up after 10 min. |
 | `UPLOAD_ACCEPTED` | constant | Regex for the Data Loader row counter ("X of Y", commas allowed); once it shows Ark has the data, so `upload` stops waiting there. |
 | `UPLOADED` / `REVIEW` / `NOTHING` | constant | Mirror result kinds returned by each `mirror_step()` ("Uploaded", "Needs review", "No changes"); also the report's headings. |
 | `plural` | function | `'1 unit'` / `'3 units'` (irregular plural optional). |
@@ -221,8 +223,9 @@ Standard library only at import (Playwright is imported inside `ark_page` / `log
 | `needs_login` | function | Page is on the Microsoft / Cloudflare sign-in. |
 | `ensure_login` | function | `login` with `[Credentials]` if `needs_login` (PPIQ's domain switch). |
 | `ark_page` | context manager | Chromium with the saved session → first URL → `ensure_login` → yields the page; always saves the session and closes the browser on the way out (also after an error). Every Ark script uses it. |
-| `trigger_download` | function | Open report → Download → wait → pull file from notifications; returns Playwright Download. |
-| `upload` | function | Drive the Data Loader wizard to upload a CSV as `dataset` (Landholdings, Units, Cases; whole option name, any capitalization) / `operation` (default Update); waits for `UPLOAD_ACCEPTED`. **Changes live data.** Used by close_dates, cost_to_extend, non_hbp_mi, case_unit_names. |
+| `trigger_download` | function | Open report → Download → wait `generation_wait_ms` → open notifications → wait while any export there is in progress (`_PREPARING`, every `_POLL_MS`, RuntimeError after `_GENERATION_TIMEOUT_MS`) → pull the newest file; returns Playwright Download. Taking the top file without that wait grabbed an older export (2026-10-21). |
+| `check_columns` | function | `check_columns(path, columns, report)`: RuntimeError ("Ark sent a different report than …", naming the columns it got) unless the CSV starts with `columns` (`None` = any name). Used by str_verification, cost_to_extend, non_hbp_mi, case_unit_names, section_id_blank. |
+| `upload` | function | Drive the Data Loader wizard to upload a CSV as `dataset` (Landholdings, Units, Cases; whole option name, any capitalization) / `operation` (default Update); waits for `UPLOAD_ACCEPTED`. **Changes live data.** Used by close_dates, cost_to_extend, non_hbp_mi, case_unit_names, section_id_blank. |
 
 ### operator_colors.py
 Imported only by map_uploader. Persists `<Maps>\operator_colors.json`.
@@ -260,7 +263,7 @@ Imported only by map_uploader. Persists `<Maps>\operator_colors.json`.
 | `_stop_file` | global | Path from `--stop-file` (set by `main`); None = no Stop possible. |
 | `stop_requested` | function | True once the stop file exists. |
 | `Step` | dataclass | `name` (button label), `run` (→ kind, line), `uploads`. |
-| `STEPS` | constant | The steps, in order: Index, Close Date, Case Update, STR, TPP-LHPP, C2E, Cases Unit Names (named after the buttons). Must match main.cpp's `g_mirrorSteps`. |
+| `STEPS` | constant | The steps, in order: Index, Close Date, Case Update, STR, TPP-LHPP, C2E, Cases Unit Names, SIB (named after the buttons). Must match main.cpp's `g_mirrorSteps`. |
 | `_begin_stage` | private function | Prints `@STAGE lo hi label` for main.cpp and remembers it. |
 | `_error_text` | private function | One-line failure reason (first line + type; `sys.exit` message). |
 | `_index_step` | private function | Runs the three counties (a failing one doesn't stop the others); "Added N new documents to the Index sheet (…)". |
@@ -332,8 +335,9 @@ Imported only by map_uploader. Persists `<Maps>\operator_colors.json`.
 | `_DEFAULT_DIR` | constant | `Desktop\C2E`, used when `[Folders] CostToExtend` is unset. |
 | `_notify` | private function | Message box (`ark_common.notify`). |
 | `_REPORT_URL` | constant | Cost-to-extend report. |
+| `_COLUMNS` | constant | The 14 report columns, the 5 that `main` reads by position named; checked by `ark_common.check_columns`. |
 | `_to_float` | private function | Currency string → float (blank → 0). |
-| `main` | function | Download, flag rows where NMA × $/acre is off by more than $10, write CSV, upload (`ark_common.upload`, Landholdings); returns the number fixed. |
+| `main` | function | Download, check `_COLUMNS`, flag rows where NMA × $/acre is off by more than $10, write CSV, upload (`ark_common.upload`, Landholdings); returns the number fixed. |
 | `mirror_step` | function | Mirror: Uploaded "Uploaded fixes for N landholdings", else "No cost to extend errors found". |
 
 ### str_verification.py
@@ -343,10 +347,11 @@ Imported only by map_uploader. Persists `<Maps>\operator_colors.json`.
 |---|---|---|
 | `_REPORT_URL` | constant | Ark "Check STR" report. |
 | `_INPUT_NAME` | constant | Downloaded report's file name, `Check_STR_(EM)_(Full).csv`. |
+| `_COLUMNS` | constant | The 8 report columns `_process` reads by position (7th unread); checked on download. |
 | `_OUT_DIR` / `_INPUT_PATH` | constant | STR Verification folder (default `Desktop\STR`); its downloaded report. |
 | `_AOI_DIR` / `_AOI_INPUT_PATH` | constant | AOI folder (default `Desktop\AOI`); its downloaded report. |
 | `_STR_ERROR_PATH` / `_AOI_ERROR_PATH` | constant | STR Verification report (`Error_Report.csv`, in `_OUT_DIR`); AOI report (`AOI MM.DD.YYYY.csv`, run date, in `_AOI_DIR`). |
-| `_download_report` | private function | `trigger_download` (60s wait) → `_AOI_INPUT_PATH` if `aoi`, else `_INPUT_PATH`. |
+| `_download_report` | private function | `trigger_download` (60s wait) → `_AOI_INPUT_PATH` if `aoi`, else `_INPUT_PATH` → `check_columns(_COLUMNS)`. |
 | `_has_whole` | private function | Text contains a token as a whole number ("4," not inside "14,"; leading zeros may differ). |
 | `_process` | private function | `aoi=False`: `_INPUT_PATH`, Section Name vs S-T-R → `_STR_ERROR_PATH`. `aoi=True`: `_AOI_INPUT_PATH`, AOI containment (`_has_whole`) → `_AOI_ERROR_PATH`. Returns the failure count. |
 | `main` | function | `ark_page` → download → `_process(aoi)`; `aoi` defaults to whether `--aoi` was passed. Returns the failure count. |
@@ -377,7 +382,8 @@ Imported only by map_uploader. Persists `<Maps>\operator_colors.json`.
 | `_DEFAULT_DIR` | constant | `Desktop\Case Update`, used when `[Folders] NonHBPMI` is unset. |
 | `_notify` | private function | Message box (`ark_common.notify`). |
 | `_REPORT_URL` | constant | Units report. |
-| `main` | function | Download, stamp today's date on every row, write CSV, upload if any rows (`ark_common.upload`, Units); always saves the session; returns the count. |
+| `_COLUMNS` | constant | Report's first columns, Record Id and Updated Date (the one stamped); checked on download. |
+| `main` | function | Download, check `_COLUMNS`, stamp today's date on every row, write CSV, upload if any rows (`ark_common.upload`, Units); always saves the session; returns the count. |
 | `mirror_step` | function | Mirror: Uploaded "Updated N units to today's date", else "No units to update". |
 
 ### case_matchup.py
@@ -403,13 +409,14 @@ Imported only by map_uploader. Persists `<Maps>\operator_colors.json`.
 | `main` | function | Read → process → write → summary box. |
 
 ### case_unit_names.py
-**Button:** Cases Unit Names (also Mirror's last step). **Uploads to Ark (Case Update).** **Folder:** `[Folders] CaseUnitNames` (default `Desktop\Cases Unit Names`). **Downloads:** `Units_For_Case_Names.csv`, `Phoenix_Cases_Fixes.csv` (overwritten each run). **Writes:** `Case_Unit_Names.<date>.csv` (Record Id, PHX Unit Name; only matched cases whose name is blank or different, i.e. needs fixing), plus `Replaced_Names.<date>.csv` when more replacements than fit in the message box.
+**Button:** Cases Unit Names (also a Mirror step). **Uploads to Ark (Case Update).** **Folder:** `[Folders] CaseUnitNames` (default `Desktop\Cases Unit Names`). **Downloads:** `Units_For_Case_Names.csv`, `Phoenix_Cases_Fixes.csv` (overwritten each run). **Writes:** `Case_Unit_Names.<date>.csv` (Record Id, PHX Unit Name; only matched cases whose name is blank or different, i.e. needs fixing), plus `Replaced_Names.<date>.csv` when more replacements than fit in the message box.
 
 | Name | Kind | Description |
 |---|---|---|
 | `_DEFAULT_DIR` | constant | Folder used when `[Folders] CaseUnitNames` is unset. |
 | `_UNITS_URL` / `_CASES_URL` | constant | The units and cases reports. |
 | `_UNITS_FILE` / `_CASES_FILE` | constant | Fixed names the two reports are saved as. |
+| `_UNITS_COLUMNS` / `_CASES_COLUMNS` | constant | Each report's columns (Record Id, STRs, Unit Name / Record Id, Applicant, PHX Unit Name, Sections); checked on download. |
 | `_OUTPUT_HEADER` | constant | Output columns: Record Id, PHX Unit Name. |
 | `_MAX_LISTED` | constant | Replaced cases listed in the message box (30); the rest go to Replaced_Names. |
 | `_notify` | private function | Message box. |
@@ -419,8 +426,29 @@ Imported only by map_uploader. Persists `<Maps>\operator_colors.json`.
 | `_match` | private function | Exact STR-set match; returns output rows (cases needing a fix), replaced names, unmatched ids, already-correct ids. Several names are comma-joined. |
 | `_write_csv` | private function | Write a header + rows CSV. |
 | `_summary` | private function | Finish message: counts (matched, already right, to fix), output path, uploaded or nothing to upload, replaced cases (old → new). |
-| `main` | function | Log in → download both reports → match → write → upload if any rows (`ark_common.upload`, dataset Cases) → summary box (skipped when `quiet`). Always saves the session; returns the number uploaded. Errors go to `case_unit_names_error.log` + a box. |
+| `main` | function | Log in → download both reports (each checked against its columns) → match → write → upload if any rows (`ark_common.upload`, dataset Cases) → summary box (skipped when `quiet`). Always saves the session; returns the number uploaded. Errors go to `case_unit_names_error.log` + a box. |
 | `mirror_step` | function | Mirror: quiet run; Uploaded "Uploaded PHX Unit Names for N cases", else "No case unit names to upload" (no match/replace totals). |
+
+### section_id_blank.py
+**Button:** SIB (also Mirror's last step). **Uploads to Ark (Landholdings Update).** **Folder:** `[Folders] SIB` (default `Desktop\SIB`). **Downloads:** `Landholdings_Section_Id_Blank_EM.csv` (landholdings with no Section Id) and `Section_ID_Getting.csv` (every section and its Id), overwritten each run. **Writes:** `Section_Id_Upload.<date>.csv` (Id, Section Name, Section Id; one row per landholding whose Section Name is exactly one section).
+
+| Name | Kind | Description |
+|---|---|---|
+| `_DEFAULT_DIR` | constant | Folder used when `[Folders] SIB` is unset. |
+| `_BLANK_URL` / `_SECTIONS_URL` | constant | The Landholdings Section Id Blank EM and Section ID Getting reports. |
+| `_BLANK_FILE` / `_SECTIONS_FILE` | constant | Fixed names the two reports are saved as. |
+| `_BLANK_COLUMNS` / `_SECTIONS_COLUMNS` | constant | Each report's first columns (Id, Section Name, Section Id / Section: Id, Section Name); checked on download. |
+| `_OUTPUT_HEADER` | constant | Output columns: Id, Section Name, Section Id. |
+| `_MAX_LISTED` | constant | Ambiguous section names listed in the message box (20). |
+| `_notify` | private function | Message box. |
+| `_key` | private function | Section Name as compared: uppercase, spaces collapsed. |
+| `_read_sections` | private function | Section name → set of section Ids; skips rows with no Id or name. |
+| `_read_blank` | private function | (Id, Section Name) of landholdings still missing a Section Id; skips rows with no Id or name, or a Section Id already. |
+| `_match` | private function | Returns output rows, unmatched landholding ids (no section of that name) and ambiguous names (more than one section Id; left out). |
+| `_write_csv` | private function | Write `_OUTPUT_HEADER` + rows. |
+| `_summary` | private function | Finish message: found/total, output path, uploaded or nothing to upload, unmatched count, ambiguous names. |
+| `main` | function | Log in → download both reports (each checked against its columns) → match → write → upload if any rows (`ark_common.upload`, dataset Landholdings) → summary box (skipped when `quiet`). Always saves the session; returns (number uploaded, ambiguous names). Errors go to `section_id_blank_error.log` + a box. |
+| `mirror_step` | function | Mirror: quiet run; Uploaded "Uploaded Section Ids for N landholdings" (plus the ambiguous count if any), Needs review when there are only ambiguous names, else "No blank Section Ids to fill in". |
 
 ---
 
@@ -475,7 +503,7 @@ is uploaded. Rules: [ARCHITECTURE.md](ARCHITECTURE.md#docket-updates-comparison)
 | `main` | function | Workbook → download RW report → compare → write the three CSVs → summary; own boxes for an unusable workbook / report and a CSV locked by Excel. `today` is for tests. Other errors go to `docket_updates_error.log` + a box. |
 
 ### docket_updates_slack.py
-**Button:** Docket Updates Slack (greyed out by `g_disabledButtonIds`; the Slack version of Docket Updates until 2026-10-16).
+**Button:** Docket Updates Slack (bottom of column 1; the Slack version of Docket Updates, which reads the Hearing Dockets workbook since 2026-10-16).
 **Folder:** `[Folders] DocketUpdates` (default `Desktop\Docket Updates`). **Reads:** Slack Web API
 (`conversations.history`, `conversations.replies`) with `[SlackCredentials] token`; then, when the messages hold any
 case, the Ark RW cases report (`_REPORT_URL`, saved as `Slack_RW_Case_Info.csv`). **Writes:** `Slack_Docket_Updates.csv`
@@ -550,6 +578,39 @@ then shows a box with the row count (errors: `deceased_error.log` + a box).
 | `_DECEASED_FILE` / `_HEIR_FILE` / `_OUTPUT_FILE` | constant | Input export, heir template, output file names. |
 | `_folder` | private function | The working folder. |
 | `main` | function | Read both inputs, cross every heir with every holding, write the CSV, box; returns the row count. Its locals `deceased` / `heirs` / `user_heirs` hold the holdings, output rows and heirs. |
+
+### qq_checker.py
+**Button:** QQ (bottom of column 4; not a Mirror step). **Folder:** `[Folders] QQ` (default `Desktop\QQ`). **Reads:**
+`QQ_Checker.csv` (Ark landholdings export saved there by hand; UTF-8 or Windows-1252). **Writes:** `QQ_Mismatches.<date>.csv`
+(UTF-8 with BOM): Id, Tract Description, Quarter Section, State, Title Source, Mismatch, Note, QQs With Values, Values
+Outside Tract, Tract QQs Without Values, Expected Quarter Section; one row per landholding failing either check. A
+quarter-quarter has a value when its NMA cell is nonzero. Tract Description must name exactly those quarter-quarters (a
+partial one such as E2SWNE counts as whole); Quarter Section must cover exactly the quarters holding them, in any wording.
+Then a box with the counts (errors: `qq_checker_error.log` + a box). Local files only.
+
+| Name | Kind | Description |
+|---|---|---|
+| `_DEFAULT_DIR` | constant | Folder used when `[Folders] QQ` is unset. |
+| `_INPUT_FILE` | constant | `QQ_Checker.csv`, the export to check. |
+| `_QQS` / `_QUARTERS` | constant | The 16 quarter-quarters in the export's column order; quarter order for a written Quarter Section. |
+| `_REQUIRED_COLUMNS` / `_OUTPUT_HEADER` | constant | Columns the export must have; columns of the output CSV. |
+| `_TERM` / `_ALIQUOT` / `_SINGLE` / `_SEPARATORS` | constant | Regexes: one aliquot step (NE, N2), a whole aliquot, a lone step (joins the next word), tract separators (`, ; &` and AND). |
+| `TRACT` / `QUARTER_SECTION` / `BOTH` / `UNREADABLE` | constant | Mismatch column values. Unreadable wins when either field can't be read. |
+| `NOTE_*` | constant | Note column texts, one per kind of problem (tract: part of a quarter, other quarter, named with no value, both ways, blank, unreadable; Quarter Section: leaves out, extra, wrong, blank, unreadable; no values at all). Tract and Quarter Section notes are joined with `; `. |
+| `_folder` / `_notify` | private function | The working folder; message box titled "QQ Checker". |
+| `_normalize` | private function | Uppercase; fraction notation to plain aliquots (N12 → N2, SE14 / SE4 → SE). |
+| `aliquot_qqs` | function | Quarter-quarters one aliquot touches (steps applied right to left on a 4×4 grid), or None if it isn't one. |
+| `_cell` / `_overlaps` | private function | A quarter-quarter's corner on the grid; whether it overlaps a box. |
+| `description_qqs` | function | Quarter-quarters (frozenset) a Tract Description or Quarter Section names, or None if any word isn't an aliquot. Two lone steps side by side join ("NE NW" = NENW); cached per text. |
+| `_quarters` | private function | Quarters holding a set of quarter-quarters. |
+| `quarter_section` | function | Shortest Quarter Section for a set of quarters (N2/S2 preferred, then E2/W2; `NW,NE,SE,SW` for all four). |
+| `_has_value` | private function | NMA cell holds interest: nonzero number or other non-blank text. |
+| `_list` | private function | Quarter-quarters as text in column order. |
+| `_tract_note` / `_qs_note` | private function | Note for each check, or '' when it passes. |
+| `check_row` | function | Check one export row (dict); returns the output row or None. |
+| `_read_rows` | private function | Export rows as dicts; RuntimeError naming any missing required column. |
+| `_summary` | private function | Box text: rows checked, mismatches by kind, output path. |
+| `main` | function | Check every row, write the CSV (header only if nothing fails), box; returns (rows checked, output rows). RuntimeError if the export is missing. |
 
 ### doc_inventory.py / doc_inventory_roosevelt / richland / divide.py
 **Button:** Index (the three county scripts, in that order; also Mirror's Index step). Each county script is a thin
@@ -672,6 +733,7 @@ Loaded first by pytest. At import it blocks the browser, the network and message
 | `Recorder` | class | Callable that records its calls; replaces `ark_common.upload`, `_login`, etc. |
 | `LOADER_TEXTS` | constant | Data Loader status texts and whether `ark_common.upload` should stop waiting at each. |
 | `FakeLoaderPage` / `_NullLocator` | class | Page `ark_common.upload` can drive with no browser; records `get_by_text` patterns in `text_patterns`, `get_by_role` (role, name) in `roles`, `goto` URLs in `visited`. |
+| `FakeReportPage` / `_ReportLocator` / `_PreparingLocator` / `_FakeDownloadInfo` | class | Report page `ark_common.trigger_download` can drive with no browser: `preparing` = in-progress notifications at each check (last repeats); records `clicks` as (element, `waited_ms` then), `checks`, total `waited_ms`. |
 
 ### tests/buttons.py
 
@@ -682,7 +744,7 @@ Loaded first by pytest. At import it blocks the browser, the network and message
 | `COLUMNS` | constant | Main-window columns left to right, each listed top to bottom; the app test checks the layout matches. |
 | `COLUMN_HEADERS` | constant | Label over each of `COLUMNS`; must match `g_columnHeaders` in main.cpp. |
 | `CORNER_BUTTONS` | constant | Buttons placed outside the columns (Mirror top-left, Settings bottom-left). |
-| `SCRIPT` / `SEQUENCE` / `DIALOG` / `INLINE` / `TODO` / `DISABLED` | constant | Button kinds (`DISABLED`: works but greyed out by `g_disabledButtonIds`; target = the script it runs once re-enabled). |
+| `SCRIPT` / `SEQUENCE` / `DIALOG` / `INLINE` / `TODO` / `HIDDEN` | constant | Button kinds (`HIDDEN`: works but hidden by `g_hiddenButtonIds` and left out of `COLUMNS`; target = the script it runs once brought back). |
 | `by_label` | function | Spec entry for a label. |
 
 ### tests/msvc.py
@@ -713,10 +775,10 @@ Loaded first by pytest. At import it blocks the browser, the network and message
 
 | File | Covers |
 |---|---|
-| `test_wiring.py` | Static checks of main.cpp, settings.cpp, scripts and docs: every folder/file a script reads has a Settings row and vice versa, the sandbox covers every folder, every button using the Ark login is locked during Mirror, `COLUMNS` + `CORNER_BUTTONS` place every button once, main.cpp's column headers match `COLUMN_HEADERS`, `g_disabledButtonIds` is the `DISABLED` buttons and their handlers still launch their scripts, every script compiles and imports, `default_organize_rules.ini` has valid `[Rules]` columns and `ColumnSchema=2`. |
-| `test_app_buttons.py` | Builds the app with stand-in scripts and clicks every button (a `DISABLED` one must be greyed out and launch nothing); checks each button sits in its `COLUMNS` column and order, under its `COLUMN_HEADERS` label. The mirror.py stand-in honors `--stop-file`; flag files next to it make it hold its first step 30 s (`mirror_long_hold`), stay alive after `@FINISHED` like the report box (`mirror_report_hold`), or exit early (`mirror_crash`). |
+| `test_wiring.py` | Static checks of main.cpp, settings.cpp, scripts and docs: every folder/file a script reads has a Settings row and vice versa, the sandbox covers every folder, every button using the Ark login is locked during Mirror (xfail for the ones using it only through `ark_page`, see KNOWN_ISSUES), `COLUMNS` + `CORNER_BUTTONS` place every shown button once, main.cpp's column headers match `COLUMN_HEADERS`, `g_hiddenButtonIds` is the `HIDDEN` buttons and their handlers and layout lines are still there, every script compiles and imports, `default_organize_rules.ini` has valid `[Rules]` columns and `ColumnSchema=2`. |
+| `test_app_buttons.py` | Builds the app with stand-in scripts and clicks every button (a `HIDDEN` one must be hidden, disabled, and launch nothing); checks each button sits in its `COLUMNS` column and order, under its `COLUMN_HEADERS` label. The mirror.py stand-in honors `--stop-file`; flag files next to it make it hold its first step 30 s (`mirror_long_hold`), stay alive after `@FINISHED` like the report box (`mirror_report_hold`), or exit early (`mirror_crash`). |
 | `test_cpp.py` | Builds and runs the C++ tests; Python reads the INI that settings.cpp writes. |
 | `test_error_reporting.py` | Every button script shows an error box on failure (title, error and log path); the map scripts name a missing package; `ark_common.run_button`. |
-| `test_ark_common.py` | `ark_common.upload` (the shared Data Loader wizard): picks the given dataset (whole name, any capitalization), confirms with the operation, stops at the "X of Y" row counter; settings with `%` read as typed; `ark_page` logs in and keeps the session after an error. |
+| `test_ark_common.py` | `ark_common.upload` (the shared Data Loader wizard): picks the given dataset (whole name, any capitalization), confirms with the operation, stops at the "X of Y" row counter; `trigger_download` waits while Ark's notifications show an export in progress and fails after the time limit instead of taking an older file; `check_columns` accepts the expected header and rejects another report's; settings with `%` read as typed; `ark_page` logs in and keeps the session after an error. |
 | `test_mirror.py` | Mirror's runner (fake steps): progress tags, failures carried on, report groups, archive file, message box; the child-process runner and its time limit (harmless `python -c` children); Stop via the stop file (Not run steps, the running child's tree killed); Index step; one full run of the real steps against the fake Ark. An autouse fixture resets `mirror._stop_file` per test. |
-| `test_ppiq.py`, `test_index.py`, `test_str_verification.py`, `test_tpp_lhpp.py`, `test_download_report.py`, `test_cost_to_extend.py`, `test_case_matchup.py`, `test_case_unit_names.py`, `test_docket_updates.py`, `test_docket_updates_slack.py`, `test_deceased.py`, `test_close_dates.py`, `test_case_update.py`, `test_map.py` | One button's script each (see the table in [TESTING.md](TESTING.md#button--tests)). |
+| `test_ppiq.py`, `test_index.py`, `test_str_verification.py`, `test_tpp_lhpp.py`, `test_download_report.py`, `test_cost_to_extend.py`, `test_case_matchup.py`, `test_case_unit_names.py`, `test_section_id_blank.py`, `test_docket_updates.py`, `test_docket_updates_slack.py`, `test_deceased.py`, `test_qq_checker.py`, `test_close_dates.py`, `test_case_update.py`, `test_map.py` | One button's script each (see the table in [TESTING.md](TESTING.md#button--tests)). |

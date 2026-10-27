@@ -11,6 +11,12 @@ import cost_to_extend
 from fakes import Recorder, read_csv
 
 
+_HEADER = ['Id', 'Land Holding Name', 'Total Cost to Extend', 'Land Holding NMA', '$/Acre for Extension',
+           'Account Name', 'Optional Extension', 'Land Holding Type', 'Primary Term Expiration',
+           'Extension Expiration', 'Original Lessee', 'HBP', 'Title Information',
+           'Lease Notes & Additional Documentation']  # Ark's cost-to-extend report columns
+
+
 def _row(record_id, total, nma, per_acre, notes='old notes'):
     """A 14-column report row: A=Id, C=Total Cost to Extend, D=NMA, E=$/Acre, N=Notes."""
     row = [''] * 14
@@ -29,7 +35,7 @@ def upload(monkeypatch):
 def test_writes_corrections_and_uploads_them(fake_ark, folders, upload):
     """Rows off by more than $10 get the calculated cost and a dated note, and are uploaded."""
     fake_ark.serve(cost_to_extend._REPORT_URL, [
-        ['Id'] + [''] * 13,
+        _HEADER,
         _row('LH-1', '$1,000.00', '10', '150'),    # calculated 1500 -> off by 500
         _row('LH-2', '1500', '10', '150.5'),       # calculated 1505 -> within $10
         _row('LH-3', 'n/a', '10', '150'),          # unparseable -> skipped
@@ -56,7 +62,7 @@ def test_writes_corrections_and_uploads_them(fake_ark, folders, upload):
 
 def test_nothing_to_fix_skips_export_and_upload(fake_ark, folders, upload):
     """When every row is within $10 there is no CSV and no upload."""
-    fake_ark.serve(cost_to_extend._REPORT_URL, [['Id'] + [''] * 13, _row('LH-1', '100', '1', '100')],
+    fake_ark.serve(cost_to_extend._REPORT_URL, [_HEADER, _row('LH-1', '100', '1', '100')],
                    filename='c2e_report.csv')
 
     cost_to_extend.main()
@@ -68,7 +74,7 @@ def test_nothing_to_fix_skips_export_and_upload(fake_ark, folders, upload):
 def test_mirror_step_reports_the_fixes_uploaded(fake_ark, folders, upload):
     """Mirror gets how many landholdings were fixed and uploaded."""
     fake_ark.serve(cost_to_extend._REPORT_URL, [
-        ['Id'] + [''] * 13, _row('LH-1', '1000', '10', '150'), _row('LH-2', '1', '10', '150'),
+        _HEADER, _row('LH-1', '1000', '10', '150'), _row('LH-2', '1', '10', '150'),
         _row('LH-3', '100', '1', '100')], filename='c2e_report.csv')
 
     assert cost_to_extend.mirror_step() == (ark_common.UPLOADED, 'Uploaded fixes for 2 landholdings')
@@ -77,9 +83,19 @@ def test_mirror_step_reports_the_fixes_uploaded(fake_ark, folders, upload):
 
 def test_mirror_step_with_nothing_to_fix(fake_ark, folders, upload):
     """Every row within $10: Mirror reports no errors found."""
-    fake_ark.serve(cost_to_extend._REPORT_URL, [['Id'] + [''] * 13, _row('LH-1', '100', '1', '100')],
+    fake_ark.serve(cost_to_extend._REPORT_URL, [_HEADER, _row('LH-1', '100', '1', '100')],
                    filename='c2e_report.csv')
 
     assert cost_to_extend.mirror_step() == (ark_common.NOTHING, 'No cost to extend errors found')
     assert upload.calls == []
 
+
+
+def test_a_different_report_from_ark_is_not_uploaded(fake_ark, folders, upload):
+    """Ark handing back another report raises instead of reading the wrong columns as costs."""
+    fake_ark.serve(cost_to_extend._REPORT_URL, [['Record Id', 'STRs', 'Unit Name'], _row('LH-1', '1000', '10', '150')],
+                   filename='c2e_report.csv')
+
+    with pytest.raises(RuntimeError, match='Cost to Extend.*Record Id, STRs, Unit Name'):
+        cost_to_extend.main()
+    assert upload.calls == []

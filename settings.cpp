@@ -45,6 +45,8 @@ static Setting s_settings[] = {
     { TEXT("Folders"), TEXT("NonHBPMI"),        TEXT("Case Update:"),        SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Case Update") },
     { TEXT("Folders"), TEXT("DocketUpdates"),   TEXT("Docket Updates:"),     SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Docket Updates") },
     { TEXT("Files"),   TEXT("HearingDockets"),  TEXT("Hearing Dockets:"),    SETTING_FILE,   TEXT("C:\\Cloud\\Box\\Land\\01. Permit & Hearing Tracking\\02. State Permits & Hearings\\ND,MT,UT,WY - Hearing Dockets.xlsx") },
+    { TEXT("Folders"), TEXT("SIB"),             TEXT("Section Id Blank:"),   SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\SIB") },
+    { TEXT("Folders"), TEXT("QQ"),              TEXT("QQ Checker:"),         SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\QQ") },
     { TEXT("Folders"), TEXT("Deceased"),        TEXT("Deceased:"),           SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Bring out your dead") },
     { TEXT("Folders"), TEXT("Index"),           TEXT("Index CSVs:"),         SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Index") },
     { TEXT("Files"),   TEXT("IndexWorkbook"),   TEXT("Index workbook:"),     SETTING_FILE,   TEXT("C:\\Cloud\\Box\\Ethan Mesecher\\Index of Scanned Docs.xlsx") },

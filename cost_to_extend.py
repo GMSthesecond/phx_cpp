@@ -22,6 +22,8 @@ def _notify(message):
 
 
 _REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=67f413a4878d0fb2c4cf3411'  # cost-to-extend landholdings report
+_COLUMNS = (['Id', None, 'Total Cost to Extend', 'Land Holding NMA', '$/Acre for Extension'] + [None] * 8
+            + ['Lease Notes & Additional Documentation'])  # report columns main reads by position (None = not read); checked on download
 
 
 def _to_float(s):
@@ -32,6 +34,7 @@ def _to_float(s):
 
 def main():
     """Download the report, build the correction CSV, and upload it if any rows need fixing.
+    Raises before reading it if the report lacks _COLUMNS.
 
     Always saves session.json and closes the browser, even on failure.
     Returns the number of landholdings fixed and uploaded (0 = nothing to fix).
@@ -50,6 +53,7 @@ def main():
         src_path = os.path.join(out_dir, dl.suggested_filename)
         dl.save_as(src_path)
         print(f'Downloaded: {src_path}', flush=True)
+        ark_common.check_columns(src_path, _COLUMNS, 'Cost to Extend')
 
         rows = []
         with open(src_path, newline='', encoding='utf-8-sig') as f:

@@ -20,6 +20,7 @@ _SCRIPTS = {
     'close_dates.py': True,
     'case_matchup.py': True,   # fails because its input CSVs are missing in the sandbox folder
     'case_unit_names.py': True,
+    'section_id_blank.py': True,
     'docket_updates.py': True,  # the sandbox Hearing Dockets workbook doesn't exist
     'docket_updates_slack.py': True,  # fails because the network (Slack) is blocked
     'non_hbp_mi.py': True,
@@ -27,6 +28,7 @@ _SCRIPTS = {
     'download_report.py': True,
     'str_verification.py': True,
     'deceased.py': True,       # fails because its input CSVs are missing in the sandbox folder
+    'qq_checker.py': True,     # no QQ_Checker.csv in the sandbox QQ folder
     'map_builder.py': True,    # no Units.csv in the sandbox Maps folder
     'map_uploader.py': True,   # no zips in the sandbox Maps folder
     'doc_inventory_roosevelt.py': True,  # the sandbox index workbook doesn't exist

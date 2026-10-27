@@ -12,8 +12,8 @@ SEQUENCE = 'sequence'  # click runs scripts one after another on a background th
 DIALOG = 'dialog'      # click opens a C++ window: target = its window class name
 INLINE = 'inline'      # click runs C++ code that reads/writes personal files: not clicked by the app test
 TODO = 'todo'          # not implemented yet: drawn yellow, click does nothing
-DISABLED = 'disabled'  # works but is greyed out (main.cpp g_disabledButtonIds): target = [script, args...] it
-                       # launches once re-enabled; a click while greyed out does nothing
+HIDDEN = 'hidden'      # works but is hidden (main.cpp g_hiddenButtonIds): target = [script, args...] it
+                       # launches once brought back; not in COLUMNS, and a BM_CLICK does nothing
 
 
 @dataclass
@@ -39,8 +39,9 @@ BUTTONS = [
     Button('TPP-LHPP', SCRIPT, ['tpp_lhpp.py'], ['test_tpp_lhpp.py']),
     Button('C2E', SCRIPT, ['cost_to_extend.py'], ['test_cost_to_extend.py']),
     Button('Docket Updates', SCRIPT, ['docket_updates.py'], ['test_docket_updates.py']),
-    # The old Slack version of Docket Updates, kept greyed out in case it is needed again
-    Button('Docket Updates Slack', DISABLED, ['docket_updates_slack.py'], ['test_docket_updates_slack.py']),
+    Button('SIB', SCRIPT, ['section_id_blank.py'], ['test_section_id_blank.py']),
+    # The Slack version of Docket Updates (#docket-updates messages vs RW)
+    Button('Docket Updates Slack', SCRIPT, ['docket_updates_slack.py'], ['test_docket_updates_slack.py']),
     # Bottom-left corner
     Button('Settings', DIALOG, 'SettingsWindow', ['test_cpp.py']),
     # Column 2
@@ -53,26 +54,26 @@ BUTTONS = [
     Button('Bring out your dead', SCRIPT, ['deceased.py'], ['test_deceased.py']),
     Button('Rename', DIALOG, 'RenameDlg', ['test_cpp.py']),
     Button('Maps', SEQUENCE, ['map_builder.py', 'map_uploader.py'], ['test_map.py']),
-    # Column 4 (not implemented yet)
+    # Column 4 (QQ works; the rest are not implemented yet)
     Button('ELMI', TODO),
-    Button('DNM', TODO),
     Button('HBPNW', TODO),
     Button('LE', TODO),
     Button('LHP', TODO),
     Button('NHBPW', TODO),
-    Button('SIB', TODO),
     Button('UNLE', TODO),
     Button('SL', TODO),
     Button('HBP Wells', TODO),
+    Button('QQ', SCRIPT, ['qq_checker.py'], ['test_qq_checker.py']),
 ]
 
-# Main-window columns left to right, each listed top to bottom (Mirror and Settings sit outside them)
+# Main-window columns left to right, each listed top to bottom (Mirror and Settings sit outside them;
+# HIDDEN buttons aren't shown, so they aren't listed)
 COLUMNS = [
     ['Close Date', 'Case Update', 'Index', 'Cases Unit Names', 'STR', 'TPP-LHPP',
-     'C2E', 'Docket Updates', 'Docket Updates Slack'],
+     'C2E', 'Docket Updates', 'SIB', 'Docket Updates Slack'],
     ['PPIQ', 'AOI', 'DMD', 'Organization'],
     ['Unit Connect to Cases', 'Bring out your dead', 'Rename', 'Maps'],
-    ['ELMI', 'DNM', 'HBPNW', 'LE', 'LHP', 'NHBPW', 'SIB', 'UNLE', 'SL', 'HBP Wells'],
+    ['ELMI', 'HBPNW', 'LE', 'LHP', 'NHBPW', 'UNLE', 'SL', 'HBP Wells', 'QQ'],
 ]
 COLUMN_HEADERS = ['Daily', 'Set Date', 'As Needed', 'In Progress']  # label above each of COLUMNS
 CORNER_BUTTONS = ['Mirror', 'Settings']  # placed outside the columns (top-left and bottom-left)

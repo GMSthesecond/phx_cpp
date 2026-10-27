@@ -16,7 +16,7 @@ def test_stamps_every_unit_and_uploads(fake_ark, folders, monkeypatch):
     upload = Recorder()
     monkeypatch.setattr(ark_common, 'upload', upload)
     fake_ark.serve(non_hbp_mi._REPORT_URL, [
-        ['Id', 'Case Review Date', 'Unit Name'],
+        ['Record Id', 'Updated Date', 'Unit Name'],
         ['U-1', '01/01/2020', 'Alpha'],
         ['U-2', '', 'Beta'],
         ['', '01/01/2020', 'no id'],
@@ -29,7 +29,7 @@ def test_stamps_every_unit_and_uploads(fake_ark, folders, monkeypatch):
     stamp = f'{today:%m/%d/%Y}'
     out_path = folders['NonHBPMI'] / f'non_hbp_mi.{today:%m.%d.%Y}.csv'
     assert read_csv(out_path) == [
-        ['Id', 'Case Review Date', 'Unit Name', 'Last updated'],
+        ['Record Id', 'Updated Date', 'Unit Name', 'Last updated'],
         ['U-1', stamp, 'Alpha', stamp],
         ['U-2', stamp, 'Beta', stamp],
     ]
@@ -39,7 +39,7 @@ def test_stamps_every_unit_and_uploads(fake_ark, folders, monkeypatch):
     assert fake_ark.sessions_saved == 1
 
 
-_HEADER = ['Id', 'Case Review Date', 'Unit Name']  # start of the Case Update report
+_HEADER = ['Record Id', 'Updated Date', 'Unit Name']  # Case Update report's columns (Ark's has only the first two)
 
 
 def test_no_units_skips_the_upload(fake_ark, folders, monkeypatch):
@@ -83,3 +83,16 @@ def test_mirror_step_with_no_units(fake_ark, folders, monkeypatch):
 
     assert non_hbp_mi.mirror_step() == (ark_common.NOTHING, 'No units to update')
 
+
+
+def test_a_different_report_from_ark_is_not_stamped_or_uploaded(fake_ark, folders, monkeypatch):
+    """Ark handing back another report raises before column 2 is overwritten with today's date,
+    so nothing is uploaded over the wrong field."""
+    upload = Recorder()
+    monkeypatch.setattr(ark_common, 'upload', upload)
+    fake_ark.serve(non_hbp_mi._REPORT_URL, [['Record Id', 'STRs', 'Unit Name'], ['U-1', '11-3S-2W', 'Velma']])
+
+    with pytest.raises(RuntimeError, match='Case Update.*Record Id, STRs, Unit Name'):
+        non_hbp_mi.main()
+    assert upload.calls == []
+    assert not list(folders['NonHBPMI'].glob('non_hbp_mi.*.csv'))

@@ -30,7 +30,7 @@ SANDBOX = pathlib.Path(tempfile.mkdtemp(prefix='phx_tests_'))  # session-wide fa
 # Every [Folders] key a script reads; the fake settings.ini points each at a sandbox folder.
 FOLDER_KEYS = ['DataMeetingDownload', 'STRVerification', 'AOI', 'CloseDates', 'Maps', 'MirrorArchive',
                'CaseMatchup', 'NonHBPMI', 'CostToExtend', 'CaseUnitNames', 'DocketUpdates',
-               'PPIQ', 'TPPLHPP', 'Deceased', 'Index', 'Organize', 'Rename']
+               'PPIQ', 'TPPLHPP', 'Deceased', 'Index', 'Organize', 'Rename', 'SIB', 'QQ']
 
 
 # ---- Safety net, installed at import so it is active even while test modules import ----

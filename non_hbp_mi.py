@@ -21,12 +21,14 @@ def _notify(message):
 
 
 _REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=391d699d4edefdf6073d9e8f'  # Ark report of units to stamp (non-HBP MI units, per the filename)
+_COLUMNS = ['Record Id', 'Updated Date']  # report's first columns (column 2 gets today's date); checked on download
 
 
 def main():
     """Log in, download the report, set each row's date column to today, write the CSV, and
-    upload it if it has any rows. Always saves the browser session and closes the browser,
-    even on failure. Returns the number of units uploaded."""
+    upload it if it has any rows. Raises before stamping anything if the report lacks _COLUMNS.
+    Always saves the browser session and closes the browser, even on failure. Returns the number
+    of units uploaded."""
     out_dir = ark_common.read_folder('NonHBPMI', _DEFAULT_DIR)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -36,6 +38,7 @@ def main():
     
     with ark_common.ark_page(_REPORT_URL) as page:
         dl = ark_common.trigger_download(page, _REPORT_URL)
+        ark_common.check_columns(dl.path(), _COLUMNS, 'Case Update')
 
         with open(dl.path(), newline='', encoding='utf-8-sig') as f:
             reader = csv.reader(f)

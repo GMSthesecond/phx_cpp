@@ -14,7 +14,7 @@ import ark_common
 import str_verification as sv
 from fakes import read_csv, write_csv
 
-_HEADER = ['Id', 'Section', 'Township', 'Range', 'Section Name', 'Township Name', 'x', 'Area of Interest']
+_HEADER = ['Id', 'Section', 'Township', 'Range', 'Section Name', 'Township Name', 'Section Id', 'Area of Interest']
 
 
 def _row(id_, section, township, range_, section_name, township_name='', aoi=''):
@@ -169,3 +169,16 @@ def test_mirror_step_with_no_mismatches(fake_ark, work):
     fake_ark.serve(sv._REPORT_URL, _REPORT[:3])
 
     assert sv.mirror_step() == (ark_common.NOTHING, 'No STR errors found')
+
+
+@pytest.mark.parametrize('aoi', [False, True])
+def test_a_different_report_from_ark_fails_clearly(fake_ark, work, aoi):
+    """Ark handing back another report (Mirror's STR step got the 3-column units report on
+    10/21/2026 and failed with "IndexError: list index out of range") raises naming the report,
+    and writes no error report."""
+    fake_ark.serve(sv._REPORT_URL, [['Record Id', 'STRs', 'Unit Name'], ['U-1', '11-3S-2W, 2-3S-2W', 'Velma']])
+
+    with pytest.raises(RuntimeError, match='Check STR.*Record Id, STRs, Unit Name'):
+        sv.main(aoi=aoi)
+    assert not (work.str / 'Error_Report.csv').exists()
+    assert not (work.aoi / _AOI_NAME).exists()

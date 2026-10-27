@@ -1,4 +1,4 @@
-"""Docket Updates Slack button (docket_updates_slack.py; the button is disabled in the app): exports
+"""Docket Updates Slack button (docket_updates_slack.py; bottom of column 1): exports
 Cheyanne Winn's #docket-updates messages to CSV, reads the board order cases out of them and compares
 them with the RW cases report from Ark.
 

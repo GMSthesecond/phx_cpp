@@ -1,13 +1,14 @@
-"""ark_common.upload: the Ark Data Loader wizard shared by every script that uploads
-(Close Date, Case Update, Cost to Extend, Case Unit Names).
+"""ark_common: the Ark Data Loader wizard shared by every script that uploads (Close Date,
+Case Update, Cost to Extend, Case Unit Names), the report download every Ark script uses
+(trigger_download), the downloaded-report column check (check_columns) and settings lookups.
 
-Driven against FakeLoaderPage, which records the page opened, the options and buttons
-picked and the text waited for, so nothing reaches Ark.
+upload is driven against FakeLoaderPage and trigger_download against FakeReportPage, which
+record what was clicked, picked and waited for, so nothing reaches Ark.
 """
 import pytest
 
 import ark_common
-from fakes import LOADER_TEXTS, FakeLoaderPage
+from fakes import LOADER_TEXTS, FakeLoaderPage, FakeReportPage, write_csv
 
 
 @pytest.mark.parametrize('text, stops', LOADER_TEXTS)
@@ -67,3 +68,72 @@ def test_ark_page_logs_in_and_keeps_the_login_when_a_step_fails(fake_ark):
             raise RuntimeError('a step failed')
     assert fake_ark.logins == ['https://ark.phoenixenergy.com/**']
     assert fake_ark.sessions_saved == 1 and fake_ark.browser_closed
+
+
+_URL = 'https://ark.phoenixenergy.com/report?recordId=test'  # report URL the download tests open
+
+
+def test_download_waits_until_ark_finishes_the_report():
+    """While the notifications panel shows an export in progress, trigger_download keeps waiting,
+    then takes the file. Taking the top file at once grabbed an older export (Mirror's STR step
+    got yesterday's units report on 10/21/2026)."""
+    page = FakeReportPage(preparing=[1, 1, 0])
+    dl = ark_common.trigger_download(page, _URL, generation_wait_ms=60_000)
+    assert dl is page.download
+    assert page.checks == 3
+    assert page.clicks[-1] == ('Download File', 60_000 + 2 * ark_common._POLL_MS)
+
+
+def test_download_finished_in_time_is_taken_after_the_first_wait():
+    """A report Ark finished within generation_wait_ms is taken without extra waiting."""
+    page = FakeReportPage(preparing=[0])
+    ark_common.trigger_download(page, _URL, generation_wait_ms=10_000)
+    assert page.waited_ms == 10_000
+    assert [what for what, _ in page.clicks][-2:] == ['#notifications-btn', 'Download File']
+
+
+def test_download_still_preparing_fails_instead_of_taking_an_older_file():
+    """A report still building after _GENERATION_TIMEOUT_MS raises, and no file is taken."""
+    page = FakeReportPage(preparing=[1])
+    with pytest.raises(RuntimeError, match='still preparing'):
+        ark_common.trigger_download(page, _URL, generation_wait_ms=60_000)
+    assert 'Download File' not in [what for what, _ in page.clicks]
+    assert page.waited_ms >= ark_common._GENERATION_TIMEOUT_MS
+
+
+@pytest.mark.parametrize('text, preparing', [
+    ("We'll let you know when your file is ready for download", True),   # just started
+    ('We’ll let you know when your file is ready for download', True),  # curly apostrophe
+    ('4% Complete', True),
+    ('99% Complete', True),
+    ('100% Complete', False),        # done
+    ('Download File', False),
+    ('Preparing download for report LandHoldings Upload Template EM', False),  # the title alone may stay
+])
+def test_preparing_text_matches_only_exports_in_progress(text, preparing):
+    """_PREPARING matches the notification lines Ark shows while it builds an export."""
+    assert bool(ark_common._PREPARING.search(text)) == preparing
+
+
+_STR_COLUMNS = ['Id', 'Section', None, 'Range']  # columns a test script reads; None = not read
+
+
+def test_check_columns_accepts_the_expected_report(tmp_path):
+    """Matching names pass; None accepts any name; extra columns after them are fine."""
+    path = write_csv(str(tmp_path / 'r.csv'), [['Id', 'Section', 'Township', 'Range', 'More'], ['1', '2', '3', '4', '5']],
+                     encoding='utf-8-sig')
+    ark_common.check_columns(path, _STR_COLUMNS, 'Check STR')
+
+
+@pytest.mark.parametrize('header', [
+    ['Record Id', 'STRs', 'Unit Name'],          # Mirror's STR step got the units report on 10/21/2026
+    ['Id', 'Section', 'Township'],               # too few columns
+    ['Id', 'Range', 'Township', 'Section'],      # reordered
+    [],                                          # empty file
+])
+def test_check_columns_rejects_a_different_report(tmp_path, header):
+    """A report without the expected columns, in order, raises naming the report and what came back."""
+    path = write_csv(str(tmp_path / 'r.csv'), [header] if header else [])
+    with pytest.raises(RuntimeError, match='Check STR') as err:
+        ark_common.check_columns(path, _STR_COLUMNS, 'Check STR')
+    assert ', '.join(header) in str(err.value)

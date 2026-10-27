@@ -9,7 +9,7 @@ Each case whose Sections are the exact same STR set as a named unit gets that un
 needs fixing (blank or different); cases that already have the matched name are left out.
 If that CSV has any rows, uploads it through the Ark Data Loader as a Case Update (changes live
 data). Then shows a message box that lists every case whose existing PHX Unit Name the upload
-replaced. Also Mirror's last step (mirror_step: no message box, reports only the upload).
+replaced. Also Mirror's "Cases Unit Names" step (mirror_step: no message box, reports only the upload).
 Uses ark_common for credentials, login, session.json, downloads and the upload.
 """
 import csv
@@ -23,6 +23,8 @@ _UNITS_URL = 'https://ark.phoenixenergy.com/report?recordId=2794f7e6d4a18cb904f6
 _CASES_URL = 'https://ark.phoenixenergy.com/report?recordId=76241e3dc6c652a5bff8f0b3'  # cases to name
 _UNITS_FILE = 'Units_For_Case_Names.csv'  # saved name of the units report (overwritten each run)
 _CASES_FILE = 'Phoenix_Cases_Fixes.csv'   # saved name of the cases report (overwritten each run)
+_UNITS_COLUMNS = ['Record Id', 'STRs', 'Unit Name']  # units report's columns; checked on download
+_CASES_COLUMNS = ['Record Id', 'Applicant', 'PHX Unit Name', 'Sections']  # cases report's columns; checked on download
 _OUTPUT_HEADER = ['Record Id', 'PHX Unit Name']  # columns of the Case_Unit_Names CSV
 _MAX_LISTED = 30  # replaced cases listed in the message box; the rest go to a Replaced_Names CSV
 
@@ -118,8 +120,9 @@ def _summary(case_count, rows, replaced, unmatched, correct, out_path, replaced_
 
 def main(quiet=False):
     """Log in, download both reports, match cases to units, write the dated CSV of cases to fix and
-    upload it if it has any rows, then show the summary (not when quiet, for Mirror). Always saves
-    the browser session and closes the browser, even on failure. Returns the number of cases uploaded."""
+    upload it if it has any rows, then show the summary (not when quiet, for Mirror). Raises if either
+    report lacks its columns (_UNITS_COLUMNS, _CASES_COLUMNS). Always saves the browser session and
+    closes the browser, even on failure. Returns the number of cases uploaded."""
     out_dir = ark_common.read_folder('CaseUnitNames', _DEFAULT_DIR)
     os.makedirs(out_dir, exist_ok=True)
     today = date.today().strftime('%m.%d.%Y')
@@ -127,8 +130,10 @@ def main(quiet=False):
     replaced_path = os.path.join(out_dir, f'Replaced_Names.{today}.csv')
 
     with ark_common.ark_page(_UNITS_URL) as page:
-        for url, filename in ((_UNITS_URL, _UNITS_FILE), (_CASES_URL, _CASES_FILE)):
+        for url, filename, columns, report in ((_UNITS_URL, _UNITS_FILE, _UNITS_COLUMNS, 'the units report'),
+                                               (_CASES_URL, _CASES_FILE, _CASES_COLUMNS, 'the cases report')):
             ark_common.trigger_download(page, url).save_as(os.path.join(out_dir, filename))
+            ark_common.check_columns(os.path.join(out_dir, filename), columns, report)
 
         cases = _read_cases(os.path.join(out_dir, _CASES_FILE))
         units = _read_units(os.path.join(out_dir, _UNITS_FILE))

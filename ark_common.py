@@ -10,6 +10,7 @@ callers keep a Playwright storage-state file (session.json) next to it via _SESS
 Standard library only at import, so a script can report a missing package (missing_package);
 login() imports Playwright when called (callers own the browser)."""
 import configparser
+import csv
 import ctypes
 import os
 import re
@@ -23,6 +24,12 @@ _SESSION  = os.path.join(_APP_DIR, 'session.json')  # Playwright storage state (
 
 _CHEVRON_PATH = 'M2.667 5.333 8 10.668l5.333-5.333H2.667z'  # SVG path of the ARK report dropdown chevron, used to locate its button
 UPLOAD_URL = 'https://ark.phoenixenergy.com/data/data-loader/newUpload'  # Ark Data Loader new-upload page, opened by upload()
+
+# Notification line Ark shows while it still builds an export ("We'll let you know when your file is
+# ready for download", then "0% Complete" to "99% Complete"). trigger_download waits while any shows.
+_PREPARING = re.compile(r"let you know when your file is ready|(?<!\d)\d{1,2}% Complete")
+_POLL_MS = 5_000  # how often trigger_download rechecks the notifications panel
+_GENERATION_TIMEOUT_MS = 10 * 60_000  # trigger_download gives up on a report still preparing after this long
 
 # Data Loader row counter ("0 of 1,400", "5 of 5"): once it shows, Ark has the data and keeps processing
 # it after the browser closes. upload() stops waiting there.
@@ -177,9 +184,11 @@ def ark_page(first_url, success_url='https://ark.phoenixenergy.com/**'):
 
 def trigger_download(page, report_url, generation_wait_ms=10_000):
     """Navigate to report_url, trigger generation, and return the Download object.
-    ARK builds the file server-side: this clicks Download in the chevron menu, waits a
-    fixed generation_wait_ms, then pulls the file from the notifications panel. Caller
-    saves it (e.g. dl.save_as)."""
+    ARK builds the file server-side: this clicks Download in the chevron menu, waits
+    generation_wait_ms, opens the notifications panel and, while any export there is still in
+    progress (_PREPARING), rechecks every _POLL_MS, then pulls the newest file. Raises if Ark is
+    still preparing after _GENERATION_TIMEOUT_MS (taking the top file then would get an older
+    export). Caller saves it (e.g. dl.save_as)."""
     page.goto(report_url)
     page.wait_for_url('**/report**', timeout=20_000)
     page.wait_for_load_state('networkidle')
@@ -189,8 +198,17 @@ def trigger_download(page, report_url, generation_wait_ms=10_000):
     page.get_by_role('button', name=re.compile(r'^\s*Download\s*$')).first.click()
 
     page.wait_for_timeout(generation_wait_ms)
+    waited = generation_wait_ms
 
     page.locator('#notifications-btn').click()
+
+    preparing = page.get_by_text(_PREPARING).filter(visible=True)
+    while preparing.count():
+        if waited >= _GENERATION_TIMEOUT_MS:
+            raise RuntimeError(f'Ark was still preparing the report after {waited // 60_000} min '
+                               f'(see its notifications): {report_url}')
+        page.wait_for_timeout(_POLL_MS)
+        waited += _POLL_MS
 
     with page.expect_download(timeout=15_000) as dl_info:
         page.locator('button:has-text("Download File")').first.click()
@@ -200,12 +218,23 @@ def trigger_download(page, report_url, generation_wait_ms=10_000):
     return dl
 
 
+def check_columns(path, columns, report):
+    """Raise if the CSV at path doesn't start with these columns (None = any name), so a script
+    never reads or uploads a different report Ark handed back. report names it in the error."""
+    with open(path, newline='', encoding='utf-8-sig') as f:
+        header = next(csv.reader(f), [])
+    if len(header) < len(columns) or any(want is not None and got.strip() != want
+                                         for want, got in zip(columns, header)):
+        raise RuntimeError(f'Ark sent a different report than {report} '
+                           f'(columns: {", ".join(header) or "none"}); run it again')
+
+
 def upload(page, csv_path, upload_name, dataset, operation='Update'):
     """Drive the Ark Data Loader wizard to upload csv_path as a dataset/operation job (dataset is
     the listbox option, e.g. 'Landholdings', 'Units' or 'Cases'; matched as the whole name, ignoring
     capitalization, since Ark renames them). Changes live Ark data. Blocks until
     the row counter (UPLOAD_ACCEPTED) shows, up to 2 minutes; Ark finishes processing on its own.
-    Used by close_dates, cost_to_extend, non_hbp_mi and case_unit_names."""
+    Used by close_dates, cost_to_extend, non_hbp_mi, case_unit_names and section_id_blank."""
     page.goto(UPLOAD_URL)
     page.wait_for_load_state('networkidle')
 

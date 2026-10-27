@@ -13,7 +13,7 @@ import re
 
 import pytest
 
-from buttons import BUTTONS, COLUMN_HEADERS, COLUMNS, CORNER_BUTTONS, DIALOG, DISABLED, SCRIPT, SEQUENCE, TODO
+from buttons import BUTTONS, COLUMN_HEADERS, COLUMNS, CORNER_BUTTONS, DIALOG, HIDDEN, SCRIPT, SEQUENCE, TODO
 from conftest import REPO
 
 MAIN_CPP = (REPO / 'main.cpp').read_text(encoding='utf-8')  # main window source
@@ -55,9 +55,9 @@ def _unwired_ids():
     return set(re.findall(r'ID_BUTTON_\w+', m[1]))
 
 
-def _disabled_ids():
-    """Id macros listed in g_disabledButtonIds (greyed out)."""
-    m = re.search(r'g_disabledButtonIds\[\]\s*=\s*\{(.*?)\};', MAIN_CPP, re.S)
+def _hidden_ids():
+    """Id macros listed in g_hiddenButtonIds (hidden)."""
+    m = re.search(r'g_hiddenButtonIds\[\]\s*=\s*\{(.*?)\};', MAIN_CPP, re.S)
     return set(re.findall(r'ID_BUTTON_\w+', m[1]))
 
 
@@ -132,19 +132,21 @@ def test_yellow_buttons_match_spec():
         assert 'CreateProcess' not in branches[id_name]
 
 
-def test_greyed_out_buttons_match_spec():
-    """g_disabledButtonIds (greyed out) is exactly the DISABLED buttons in the spec, none of them is a
-    Mirror step, and each one's handler still launches its spec script, so re-enabling it is one line."""
+def test_hidden_buttons_match_spec():
+    """g_hiddenButtonIds is exactly the HIDDEN buttons in the spec, none of them is a Mirror step, and
+    each one's handler still launches its spec script and LayoutControls still places it, so bringing
+    it back is one line."""
     ids_by_label = {label: id_name for id_name, label in _button_table()}
-    disabled = [b for b in BUTTONS if b.kind == DISABLED]
-    assert _disabled_ids() == {ids_by_label[b.label] for b in disabled}
+    hidden = [b for b in BUTTONS if b.kind == HIDDEN]
+    assert _hidden_ids() == {ids_by_label[b.label] for b in hidden}
     branches = _command_branches()
     mirror_labels = {label for label, _ in _mirror_steps()}
-    for b in disabled:
+    for b in hidden:
         script, *args = b.target
         expected = f'LaunchScript(hwnd, TEXT("{script}")' + (f', TEXT("{" ".join(args)}")' if args else '') + ')'
         assert expected in branches[ids_by_label[b.label]], f'{b.label}: expected the handler to run {script}'
-        assert b.label not in mirror_labels, f'{b.label} is greyed out, so Mirror must not run it'
+        assert b.label not in mirror_labels, f'{b.label} is hidden, so Mirror must not run it'
+        assert f'GetDlgItem(hwnd, {ids_by_label[b.label]})' in MAIN_CPP, f'{b.label}: keep its LayoutControls line'
 
 
 def test_mirror_steps_match_mirror_py():
@@ -166,6 +168,20 @@ def test_buttons_sharing_the_ark_login_are_locked_during_mirror():
             assert b.label in covered, f'{b.label} uses the Ark login: add it to g_lockedDuringMirror in main.cpp'
 
 
+@pytest.mark.xfail(strict=True, reason='KNOWN_ISSUES: Docket Updates and Docket Updates Slack sign in through '
+                                       'ark_page but are not locked during Mirror')
+def test_buttons_using_ark_page_are_locked_during_mirror():
+    """Like the test above, but also counts scripts that use the Ark login through ark_common.ark_page
+    (which loads and saves session.json) without naming _SESSION themselves."""
+    covered = {label for label, _ in _mirror_steps()} | _locked_during_mirror()
+    for b in BUTTONS:
+        if b.kind not in (SCRIPT, SEQUENCE) or b.label == 'Mirror':
+            continue
+        scripts = [t for t in b.target if t.endswith('.py')]
+        if any('ark_page(' in (REPO / s).read_text(encoding='utf-8-sig') for s in scripts):
+            assert b.label in covered, f'{b.label} uses the Ark login: add it to g_lockedDuringMirror in main.cpp'
+
+
 def test_script_buttons_launch_the_spec_script():
     """Each SCRIPT button's handler launches the spec script and arguments through LaunchScript."""
     ids_by_label = {label: id_name for id_name, label in _button_table()}
@@ -184,7 +200,7 @@ def test_launched_scripts_exist():
     for script in _launched_scripts():
         assert (REPO / script).is_file(), f'main.cpp launches {script}, which does not exist'
     for b in BUTTONS:
-        if b.kind in (SCRIPT, SEQUENCE, DISABLED):
+        if b.kind in (SCRIPT, SEQUENCE, HIDDEN):
             for script in b.target:
                 if script.endswith('.py'):
                     assert script in _launched_scripts(), f'{b.label}: main.cpp never launches {script}'
@@ -201,9 +217,9 @@ def test_every_working_button_has_tests():
 
 
 def test_every_button_has_one_place_in_the_layout_spec():
-    """COLUMNS plus CORNER_BUTTONS in buttons.py name every button exactly once."""
+    """COLUMNS plus CORNER_BUTTONS in buttons.py name every shown (not HIDDEN) button exactly once."""
     placed = [label for column in COLUMNS for label in column] + CORNER_BUTTONS
-    assert sorted(placed) == sorted(b.label for b in BUTTONS)
+    assert sorted(placed) == sorted(b.label for b in BUTTONS if b.kind != HIDDEN)
 
 
 def test_column_headers_match_the_spec():

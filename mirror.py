@@ -34,6 +34,7 @@ import doc_inventory_divide
 import doc_inventory_richland
 import doc_inventory_roosevelt
 import non_hbp_mi
+import section_id_blank
 import str_verification
 import tpp_lhpp
 
@@ -124,6 +125,7 @@ STEPS = [
     Step('TPP-LHPP', tpp_lhpp.mirror_step, uploads=False),
     Step('C2E', cost_to_extend.mirror_step, uploads=True),
     Step('Cases Unit Names', case_unit_names.mirror_step, uploads=True),
+    Step('SIB', section_id_blank.mirror_step, uploads=True),
 ]
 
 

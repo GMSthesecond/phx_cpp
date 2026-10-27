@@ -1,7 +1,6 @@
-"""Docket Updates Slack, launched by the "Docket Updates Slack" button. That button is disabled
-(greyed out by main.cpp's g_disabledButtonIds) since 2026-10-16, when Docket Updates switched to
-the Hearing Dockets workbook (docket_updates.py). This is the old Slack version, kept to reactivate.
-Its files carry a Slack_ prefix so they don't clash with Docket Updates' in the same folder.
+"""Docket Updates Slack, launched by the "Docket Updates Slack" button (bottom of column 1). This is
+the Slack version of Docket Updates; since 2026-10-16 Docket Updates itself reads the Hearing Dockets
+workbook (docket_updates.py). Its files carry a Slack_ prefix so they don't clash with Docket Updates' in the same folder.
 
 Downloads every message Cheyanne Winn posted in the #docket-updates Slack channel (her posts
 and her thread replies) through the Slack Web API, using the user token in settings.ini

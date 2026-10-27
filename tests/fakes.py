@@ -262,3 +262,90 @@ class FakeLoaderPage:
     def __getattr__(self, name):
         """wait_for_load_state, wait_for_timeout, ... are no-ops."""
         return lambda *args, **kwargs: None
+
+
+class _FakeDownloadInfo:
+    """What page.expect_download yields: .value is the download."""
+
+    def __init__(self, page):
+        """page is the FakeReportPage whose click supplies the download."""
+        self._page = page
+
+    @property
+    def value(self):
+        """The download the "Download File" click started."""
+        return self._page.download
+
+
+class _ReportLocator(_NullLocator):
+    """A FakeReportPage locator: records clicks on it as (what, page time waited so far)."""
+
+    def __init__(self, page, what):
+        """what names the element, e.g. '#notifications-btn' or 'Download File'."""
+        super().__init__()
+        self._page = page
+        self._what = what
+
+    def click(self, *args, **kwargs):
+        """Records the click and when it happened."""
+        self._page.clicks.append((self._what, self._page.waited_ms))
+
+
+class _PreparingLocator(_NullLocator):
+    """The notifications still in progress: count() plays back FakeReportPage.preparing, one per check."""
+
+    def __init__(self, page):
+        """page is the owning FakeReportPage."""
+        super().__init__()
+        self._page = page
+
+    def filter(self, **kwargs):
+        """filter(visible=True) narrows nothing in the fake."""
+        return self
+
+    def count(self):
+        """How many exports the panel shows in progress at this check (the last value repeats)."""
+        self._page.checks += 1
+        return self._page.preparing.pop(0) if len(self._page.preparing) > 1 else self._page.preparing[0]
+
+
+class FakeReportPage:
+    """Stand-in for an Ark report page as ark_common.trigger_download drives it. preparing lists how
+    many exports the notifications panel shows in progress at each check (the last repeats).
+    Records clicks as (element, waited_ms at the time), total waited_ms, checks made and the
+    get_by_text patterns used. Waits are not slept."""
+
+    def __init__(self, preparing=(0,)):
+        """preparing: in-progress counts for successive checks of the panel."""
+        self.preparing = list(preparing)
+        self.clicks = []
+        self.checks = 0
+        self.waited_ms = 0
+        self.text_patterns = []
+        self.download = FakeDownload('report.csv', 'report.csv')
+
+    def locator(self, selector, **kwargs):
+        """The chevron, #notifications-btn or the "Download File" button."""
+        return _ReportLocator(self, 'Download File' if 'Download File' in selector else selector)
+
+    def get_by_role(self, role, name=None, **kwargs):
+        """The chevron menu's Download button."""
+        return _ReportLocator(self, 'Download')
+
+    def get_by_text(self, pattern, **kwargs):
+        """The in-progress notification text trigger_download watches for."""
+        self.text_patterns.append(pattern)
+        return _PreparingLocator(self)
+
+    def wait_for_timeout(self, ms):
+        """Adds to waited_ms instead of sleeping."""
+        self.waited_ms += ms
+
+    @contextmanager
+    def expect_download(self, **kwargs):
+        """Yields the download that the "Download File" click inside the block starts."""
+        yield _FakeDownloadInfo(self)
+
+    def __getattr__(self, name):
+        """goto, wait_for_url, wait_for_load_state, ... are no-ops."""
+        return lambda *args, **kwargs: None

@@ -20,6 +20,8 @@ import ark_common
 _REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=4d424303b039c7d617785bde'  # Ark "Check STR (EM) (Full)" report
 
 _INPUT_NAME = 'Check_STR_(EM)_(Full).csv'  # Downloaded report's file name, overwritten each run
+_COLUMNS = ['Id', 'Section', 'Township', 'Range', 'Section Name', 'Township Name', None,
+            'Area of Interest']  # report columns _process reads by position (None = not read); checked on download
 
 _OUT_DIR    = ark_common.read_folder('STRVerification', r'C:\Users\Ethan Mesecher\Desktop\STR')  # STR Verification working folder ([Folders] STRVerification)
 _INPUT_PATH = os.path.join(_OUT_DIR, _INPUT_NAME)  # STR Verification's downloaded report
@@ -35,12 +37,14 @@ _AOI_ERROR_PATH = os.path.join(_AOI_DIR, f'AOI {datetime.date.today():%m.%d.%Y}.
 # ---------------------------------------------------------------------------
 
 def _download_report(page, aoi):
-    """Download the report (60s generation wait) and save it to _AOI_INPUT_PATH (AOI) or _INPUT_PATH (STR)."""
+    """Download the report (60s generation wait) and save it to _AOI_INPUT_PATH (AOI) or _INPUT_PATH (STR);
+    raises if it lacks _COLUMNS (Ark sent another report)."""
     dl = ark_common.trigger_download(page, _REPORT_URL, generation_wait_ms=60_000)
     input_path = _AOI_INPUT_PATH if aoi else _INPUT_PATH
     os.makedirs(os.path.dirname(input_path), exist_ok=True)
     dl.save_as(input_path)
     print(f'Saved: {input_path}', flush=True)
+    ark_common.check_columns(input_path, _COLUMNS, 'Check STR')
 
 
 # ---------------------------------------------------------------------------

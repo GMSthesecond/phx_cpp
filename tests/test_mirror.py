@@ -23,6 +23,7 @@ import close_dates
 import cost_to_extend
 import mirror
 import non_hbp_mi
+import section_id_blank
 import str_verification
 import tpp_lhpp
 from buttons import by_label
@@ -421,11 +422,11 @@ def test_steps_are_the_mirror_buttons_in_order():
     """STEPS names real buttons (main.cpp's g_mirrorSteps must match; see test_wiring)."""
     names = [s.name for s in mirror.STEPS]
     assert names == ['Index', 'Close Date', 'Case Update', 'STR', 'TPP-LHPP', 'C2E',
-                     'Cases Unit Names']
+                     'Cases Unit Names', 'SIB']
     for name in names:
         by_label(name)
     assert [s.name for s in mirror.STEPS if s.uploads] == ['Close Date', 'Case Update', 'C2E',
-                                                           'Cases Unit Names']
+                                                           'Cases Unit Names', 'SIB']
 
 
 def test_full_run_against_the_fake_ark(fake_ark, folders, monkeypatch, msgboxes, capsys, tmp_path):
@@ -441,9 +442,9 @@ def test_full_run_against_the_fake_ark(fake_ark, folders, monkeypatch, msgboxes,
     fake_ark.serve(close_dates._REPORT_URL, [['Name', 'Id', 'Close Date', 'Status', 'x'],
                                              ['a', 'LH-1', '09/25/2026', 'Closed', ''],
                                              ['d', 'LH-2', '09/25/2026', 'Deferred', '']])
-    fake_ark.serve(non_hbp_mi._REPORT_URL, [['Id', 'Case Review Date'], ['U-1', ''], ['U-2', '']])
+    fake_ark.serve(non_hbp_mi._REPORT_URL, [['Record Id', 'Updated Date'], ['U-1', ''], ['U-2', '']])
     fake_ark.serve(str_verification._REPORT_URL, [
-        ['Id', 'Section', 'Township', 'Range', 'Section Name', 'Township Name', 'x', 'Area of Interest'],
+        ['Id', 'Section', 'Township', 'Range', 'Section Name', 'Township Name', 'Section Id', 'Area of Interest'],
         ['LH-3', '12', '153N', '97W', '12-153N-98W', '', '', '']])
     soon = f'{date.today():%Y-%m-%d}'
     fake_ark.serve(tpp_lhpp._REPORT_URLS[0][0], [['Id', 'Total Purchase Price', 'Status', 'Close Date'],
@@ -453,10 +454,17 @@ def test_full_run_against_the_fake_ark(fake_ark, folders, monkeypatch, msgboxes,
                    filename=tpp_lhpp._LHT_FILENAME)
     row = [''] * 14
     row[0], row[2], row[3], row[4] = 'LH-4', '1', '10', '150'
-    fake_ark.serve(cost_to_extend._REPORT_URL, [['Id'] + [''] * 13, row], filename='c2e.csv')
+    c2e_header = ['Id', 'Land Holding Name', 'Total Cost to Extend', 'Land Holding NMA', '$/Acre for Extension',
+                  'Account Name', 'Optional Extension', 'Land Holding Type', 'Primary Term Expiration',
+                  'Extension Expiration', 'Original Lessee', 'HBP', 'Title Information',
+                  'Lease Notes & Additional Documentation']
+    fake_ark.serve(cost_to_extend._REPORT_URL, [c2e_header, row], filename='c2e.csv')
     fake_ark.serve(case_unit_names._UNITS_URL, [['Record Id', 'STRs', 'Unit Name'], ['U-9', '1-150N-100W', 'ARCHES']])
     fake_ark.serve(case_unit_names._CASES_URL, [['Record Id', 'Applicant', 'PHX Unit Name', 'Sections'],
                                                 ['C-1', 'Phoenix Operating LLC', 'OLD', '1-150N-100W']])
+    fake_ark.serve(section_id_blank._BLANK_URL, [['Id', 'Section Name', 'Section Id', 'State'],
+                                                 ['LH-5', '1-150N-100W', '', 'ND']])
+    fake_ark.serve(section_id_blank._SECTIONS_URL, [['Section: Id', 'Section Name'], ['S-1', '1-150N-100W']])
 
     mirror.main()
 
@@ -468,7 +476,9 @@ def test_full_run_against_the_fake_ark(fake_ark, folders, monkeypatch, msgboxes,
                  '  STR: 1 Section Name mismatch: review Error_Report.csv',
                  '  TPP-LHPP: 1 price mismatch closing in the next two weeks: review PHX_Price_Paid_Export.xlsx',
                  '  Index: No new documents',
-                 '  Cases Unit Names: Uploaded PHX Unit Names for 1 case']:
+                 '  Cases Unit Names: Uploaded PHX Unit Names for 1 case',
+                 '  SIB: Uploaded Section Ids for 1 landholding']:
         assert line in text.splitlines()
     assert 'Failed' not in text
-    assert [kw['dataset'] for _, kw in upload.calls] == ['Landholdings', 'Units', 'Landholdings', 'Cases']
+    assert [kw['dataset'] for _, kw in upload.calls] == ['Landholdings', 'Units', 'Landholdings', 'Cases',
+                                                               'Landholdings']
