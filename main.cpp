@@ -2,7 +2,7 @@
 // Builds the grid of buttons; each button either launches a Python script that sits next to
 // the exe (LaunchScript: `py "<exeDir>\script.py"`, no console window) or opens a C++ dialog
 // (Settings -> settings.cpp, Organization -> organize.cpp, Rename -> rename.cpp).
-// Each button is labeled with the Desktop folder its work goes to (C2E, DMD, STR, ...).
+// Each button is labeled with the Desktop folder its work goes to (C2E, NAI, STR, ...).
 // Index and Maps run their scripts on a background thread so the window stays responsive.
 // Mirror (top-left, mirror.cpp) runs several buttons' work in a row; those buttons are drawn green.
 // While Mirror runs its button reads "Stop" and clicks go to StopMirror.
@@ -39,7 +39,7 @@
 // Column 2
 #define ID_BUTTON_PPIQ         20
 #define ID_BUTTON_AOI          11
-#define ID_BUTTON_DOWNLOAD      9
+#define ID_BUTTON_NAI           9  // runs nai_download.py (Newly Acquired Interest; was DMD)
 #define ID_BUTTON_ORGANIZE     44
 // Column 3
 #define ID_BUTTON_CASE_MATCHUP 46
@@ -128,7 +128,7 @@ static const MirrorStep g_mirrorSteps[] = {
 // Buttons Mirror doesn't run but disables while it runs, because their scripts share the Ark
 // login (session.json) with Mirror's steps (test_wiring checks every such script is covered).
 static const int g_lockedDuringMirror[] = {
-    ID_BUTTON_PPIQ, ID_BUTTON_AOI, ID_BUTTON_DOWNLOAD,
+    ID_BUTTON_PPIQ, ID_BUTTON_AOI, ID_BUTTON_NAI,
 };
 
 // True if id is one of g_mirrorSteps. WM_CREATE makes those buttons owner-drawn so WM_DRAWITEM can paint them green.
@@ -404,7 +404,7 @@ void LayoutControls(HWND hwnd) {
     y = y0;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_PPIQ),     c2, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_AOI),      c2, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DOWNLOAD), c2, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_NAI),      c2, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_ORGANIZE), c2, y, bw, bh, TRUE);
 
     // Column 3
@@ -498,7 +498,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // Column 2
                 { ID_BUTTON_PPIQ,        TEXT("PPIQ")                 },
                 { ID_BUTTON_AOI,         TEXT("AOI")                   },
-                { ID_BUTTON_DOWNLOAD,    TEXT("DMD")                   },
+                { ID_BUTTON_NAI,         TEXT("NAI")                   },
                 { ID_BUTTON_ORGANIZE,    TEXT("Organization")          },
                 // Column 3
                 { ID_BUTTON_CASE_MATCHUP, TEXT("Unit Connect to Cases") },
@@ -631,8 +631,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 LaunchScript(hwnd, TEXT("cost_to_extend.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_SETTINGS) {
                 OpenSettings(hwnd);
-            } else if (LOWORD(wParam) == ID_BUTTON_DOWNLOAD) {
-                LaunchScript(hwnd, TEXT("download_report.py"));
+            } else if (LOWORD(wParam) == ID_BUTTON_NAI) {
+                LaunchScript(hwnd, TEXT("nai_download.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_ELMI) {
                 // TODO: implement ELMI
             } else if (LOWORD(wParam) == ID_BUTTON_HBPNW) {

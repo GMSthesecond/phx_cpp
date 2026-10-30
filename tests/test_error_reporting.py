@@ -25,7 +25,7 @@ _SCRIPTS = {
     'docket_updates_slack.py': True,  # fails because the network (Slack) is blocked
     'non_hbp_mi.py': True,
     'ppiq.py': True,
-    'download_report.py': True,
+    'nai_download.py': True,
     'str_verification.py': True,
     'deceased.py': True,       # fails because its input CSVs are missing in the sandbox folder
     'qq_checker.py': True,     # no QQ_Checker.csv in the sandbox QQ folder
@@ -51,7 +51,7 @@ def test_failure_shows_a_message_box(script, msgboxes, no_real_makedirs):
     assert msgboxes, f'{script} failed without telling the user'
 
 
-@pytest.mark.parametrize('script, title', [('ppiq.py', 'PPIQ'), ('download_report.py', 'Data Meeting Download'),
+@pytest.mark.parametrize('script, title', [('ppiq.py', 'PPIQ'), ('nai_download.py', 'Newly Acquired Interest'),
                                            ('str_verification.py', 'STR Verification'), ('deceased.py', 'Deceased')])
 def test_error_box_names_the_error_and_the_log(script, title, msgboxes, folders, monkeypatch):
     """The box is an error titled for the button; it shows the error and where the full log went."""

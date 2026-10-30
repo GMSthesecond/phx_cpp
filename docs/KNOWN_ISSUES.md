@@ -29,14 +29,14 @@ Fixed 2026-10-09:
 - Case Unit Names couldn't upload: Ark renamed the Data Loader dataset "Case" to "cases". It now asks for
   "Cases", and `ark_common.upload` matches the option's whole name in any capitalization.
 - Silent failures: every button script now shows an error box naming the error and its `*_error.log`
-  (`ark_common.run_button`); PPIQ, Data Meeting Download, STR Verification, AOI and Deceased show a box when
+  (`ark_common.run_button`); PPIQ, NAI, STR Verification, AOI and Deceased show a box when
   done; the map scripts say which package to install if one is missing; Index stops (workbook missing or
   open in Excel) appear in a box too.
 - Settings has a row for every folder (17), the index workbook, and the Ark / Enverus / Slack sign-ins.
   PPIQ, TPP-LHPP, Deceased, Index, Organize and Rename read their folders from it instead of hardcoded paths.
 - A `%` in a password, token or folder setting crashed every script (configparser interpolation); it is now read as typed.
 - Mirror: each step runs in its own process and is stopped after 20 minutes, so a hung page no longer holds up
-  the rest. PPIQ, AOI and Data Meeting Download are disabled while it runs (they share the Ark login).
+  the rest. PPIQ, AOI and NAI are disabled while it runs (they share the Ark login).
 - TPP-LHPP's Mirror line now flags Close Dates it can't read instead of leaving them out silently.
 - Organize: the most specific rule wins ("AMAZON PRIME" over "AMAZON"); credit-card payments are left out
   (both sides); a refund offsets its category instead of counting as Income.
@@ -46,7 +46,7 @@ Fixed 2026-10-09:
   caught before the scan. The three county scripts now share doc_inventory.py.
 - Duplication: main.cpp's launch blocks are one `LaunchScript`; `Trim` / `SplitCSV` / `EscCSV` live in csv_text.h;
   every Ark script opens the browser through `ark_common.ark_page` (which also saves the login after an error,
-  now including Data Meeting Download and STR Verification); message boxes go through `ark_common.notify`.
+  now including NAI and STR Verification); message boxes go through `ark_common.notify`.
 - box_copy_deals.py (one-off, launched by nothing) was deleted; it's in git history.
 - Map Uploader signed in through a captured Enverus link whose `state=` token would expire. It now opens the
   app, which sends a signed-out browser to a fresh sign-in page (confirmed by hand 2026-10-09).
@@ -89,8 +89,8 @@ None open.
   10 minutes and fails.
 - Notifications are per Ark account, so an export started by hand in Ark during a run makes the step wait for it
   too, and if it finishes first it can be taken as the newest file. The column check catches that for STR/AOI,
-  Cost to Extend, Case Update, Cases Unit Names and SIB. Close Date, TPP-LHPP, PPIQ, Docket Updates and Data Meeting
-  Download have no column check (Close Date's real report header isn't known; its raw download isn't saved).
+  Cost to Extend, Case Update, Cases Unit Names and SIB. Close Date, TPP-LHPP, PPIQ, Docket Updates and NAI
+  have no column check (Close Date's real report header isn't known; its raw download isn't saved).
 
 ## Settings gaps
 
@@ -99,6 +99,9 @@ None open.
 - Organize's committed `default_organize_rules.ini` is only a snapshot. Rules learned afterwards stay in
   `%APPDATA%\PhoenixLandDept\organize_rules.ini` until copied back into the repo, and a machine that already
   has an `organize_rules.ini` never picks up the repo copy again.
+- NAI was DMD ("Data Meeting Download") before 2026-10-28. A settings.ini from then still holds
+  `[Folders] DataMeetingDownload`; Settings and nai_download read it until `NewlyAcquiredInterest` is saved, and
+  nothing deletes the old key. Once every machine has saved the new key, the `oldKey` / `old_key` fallback can go.
 
 ## Minor
 
@@ -149,10 +152,26 @@ None open.
   text only: attached files aren't downloaded, so a file-only post has a blank Message. An edited message shows its
   latest text. Date, Time and ID use the PC's time zone, so the same message gets a different ID on a PC in another zone.
 - Docket Updates Slack's comparison finds RW records by case number only. A mistyped number in Slack gives *Not in RW*
-  (or a wrong pairing), so it also lands in `Slack_Not_In_RW.csv`; check a row there against RW before adding it. RW records with no
-  number aren't found. Slack has some data slips the CSV surfaces but can't fix:
-  the same case listed twice in one message with different sections (32742, 32744 on 9/23/2026), and Montana
-  types like "AMENDMENT – CONTESTED" that map to no RW type (shown, not compared). RW has some duplicate
-  records (two 32744s, one with applicant "Phoneix Operating LLC"); each gets its own row.
+  (or the wrong record), so it also lands in `Slack_Not_In_RW.csv`; check a row there against RW before adding it. RW records with no
+  number aren't found. Case Type isn't compared (since 2026-10-27), so a wrong type in RW isn't reported. RW has
+  some duplicate records (two 32744s, one with applicant "Phoneix Operating LLC"); each gets its own row.
+- Docket Updates Slack doesn't read sections (dropped 2026-10-27 to cut scope) and only adds up the `(N Wells)` lines
+  into one well count, so it can't tell which sub-case a post is about. A well count written anywhere else (in the
+  header, or in a remark like "3 wells approved") isn't read, and that case's Well Count is blank.
+- Docket Updates Slack's well count comparison (added 2026-10-27) hasn't run against the live report. It expects a
+  column named `Number of Wells` (any case); if the finish box says Number of Wells wasn't compared, the column has
+  another name: change `_RW_WELLS`. Slack's count is the whole case's, so it's compared with the total over the RW
+  records the case is compared with; a duplicate RW record (two 32744s) is counted twice and makes the case differ.
+- Docket Updates Slack's `Slack_Docket_Upload.csv` (added 2026-10-27) hasn't been loaded into Ark yet, and isn't
+  uploaded automatically until it has been. On the first real load check that the Data Loader accepts the column
+  names, MM/DD/YYYY dates and the link-plus-notes Case Notes, and that DISMISSED's blank Order Status clears the
+  field. The RW report has no `Date Order Signed` column yet, so that column is left out of the upload (the finish
+  box says so) until it's added to the report. Cases with sub-cases or several RW records are never in the upload:
+  review their rows in the differences workbook by hand.
+- Files from before 2026-10-27 (`Slack_Docket_Updates.csv`, `Slack_Docket_Differences.csv`) stay in the Docket Updates
+  folder; Docket Updates Slack now writes `Parsed_Slack_Messages.csv` and `Slack_Docket_Differences.xlsx` and never
+  touches the old ones. Delete them by hand. Every `<number>` / `<number>-k` record is compared with the case's one status and type,
+  so an order covering only some sub-cases shows the others as *Differs*, and a well group RW has no sub-case for
+  isn't reported. A field-rules case RW only has as Roman-numeral sub-cases (`32665-V-1`) is compared with all of them.
 - `_TYPE_RULES` is a judgment call agreed on 2026-10-12. For example, an AMENDMENT whose RW record is Commingling
   or Permit to Drill shows as a Type difference.

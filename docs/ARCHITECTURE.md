@@ -29,7 +29,7 @@ flowchart LR
     end
 
     subgraph py["Python scripts (py.exe, no console)"]
-        arkScripts["Ark scripts<br/>ppiq, tpp_lhpp, download_report,<br/>cost_to_extend, str_verification,<br/>close_dates, non_hbp_mi, case_matchup,<br/>case_unit_names, section_id_blank"]
+        arkScripts["Ark scripts<br/>ppiq, tpp_lhpp, nai_download,<br/>cost_to_extend, str_verification,<br/>close_dates, non_hbp_mi, case_matchup,<br/>case_unit_names, section_id_blank"]
         index["doc_inventory_roosevelt / richland / divide<br/>(wrappers of doc_inventory.py)"]
         map["map_builder → map_uploader"]
         deceased["deceased.py"]
@@ -86,7 +86,7 @@ flowchart LR
     docket -->|"RW_Case_Info.csv, Docket_Differences.csv,<br/>Docket_Upload.csv, Not_In_RW.csv"| desk
     docketSlack -->|"read-only history"| slack
     docketSlack -->|"RW cases report (read-only)"| arkSite
-    docketSlack -->|"Slack_*.csv"| desk
+    docketSlack -->|"Parsed_Slack_Messages.csv,<br/>Slack_RW_Case_Info.csv,<br/>Slack_Docket_Differences.xlsx,<br/>Slack_Docket_Upload.csv,<br/>Slack_Not_In_RW.csv"| desk
 ```
 
 **How a script button works:** `WM_COMMAND` in `main.cpp` calls `LaunchScript`, which runs
@@ -120,11 +120,11 @@ the id from that list brings it back.
 | 1 | C2E *(green)* | `cost_to_extend.py` | **Yes — Ark Landholdings Update** |
 | 1 | Docket Updates | `docket_updates.py`: the ND and MT sheets of the Hearing Dockets workbook in Box compared with the Ark RW cases report → `Desktop\Docket Updates\Docket_Differences.csv`, `Docket_Upload.csv` (a Cases Update for the Data Loader, **not uploaded**) and `Not_In_RW.csv` (see *Docket Updates comparison*) | No (reads Box and Ark only) |
 | 1 | SIB *(green)* | `section_id_blank.py`: downloads Landholdings Section Id Blank EM and Section ID Getting to `[Folders] SIB`, gives each landholding with a blank Section Id the Id of the section with the same Section Name → `Section_Id_Upload.MM.DD.YYYY.csv` (Id, Section Name, Section Id), uploaded when it has rows, + a box with the counts. Names with no section in Ark, or more than one, are left alone | **Yes — Ark Landholdings Update** |
-| 1 | Docket Updates Slack | `docket_updates_slack.py`, the Slack version of Docket Updates (Docket Updates itself reads the Hearing Dockets workbook since 2026-10-16): Cheyanne Winn's #docket-updates messages → `Slack_Docket_Updates.csv`, their cases compared with RW → `Slack_Docket_Differences.csv`, `Slack_Not_In_RW.csv` (see *Docket Updates Slack comparison*) | No (reads Slack and Ark only) |
+| 1 | Docket Updates Slack | `docket_updates_slack.py`, the Slack version of Docket Updates (Docket Updates itself reads the Hearing Dockets workbook since 2026-10-16): Cheyanne Winn's #docket-updates messages → `Parsed_Slack_Messages.csv`, their cases compared with RW → `Slack_Docket_Differences.xlsx` (differing records, cells highlighted), `Slack_Docket_Upload.csv` (Cases Update, **not uploaded**), `Slack_Not_In_RW.csv` (see *Docket Updates Slack comparison*) | No (reads Slack and Ark only) |
 | 1 | Settings *(bottom-left)* | `OpenSettings` (settings.cpp): every folder, the index and Hearing Dockets workbooks and the sign-ins | settings.ini |
 | 2 | PPIQ | `ppiq.py` → `Update_Inverted.csv` + a box with the issue count | No (downloads + local CSV) |
 | 2 | AOI | `str_verification.py --aoi` → `AOI MM.DD.YYYY.csv` (unverifiable Areas of Interest) + a box with the count | No |
-| 2 | DMD | `download_report.py` + a box saying where the reports went | No |
+| 2 | NAI | `nai_download.py` (Newly Acquired Interest) + a box saying where the reports went | No |
 | 2 | Organization | `OpenOrganize` (organize.cpp; folder `[Folders] Organize`) | No |
 | 3 | Unit Connect to Cases | `case_matchup.py` | No |
 | 3 | Bring out your dead | `deceased.py` → `deceased_upload.csv` + a box with the row count | No (writes upload CSV only) |
@@ -133,7 +133,7 @@ the id from that list brings it back.
 | 4 | ELMI, HBPNW, LE, LHP, NHBPW, UNLE, SL, HBP Wells | *(yellow — TODO)* | — |
 | 4 | QQ *(bottom)* | `qq_checker.py`: reads `QQ_Checker.csv` (saved by hand in `[Folders] QQ`) and checks each row's Tract Description and Quarter Section against its 16 quarter-quarter NMA columns (nonzero = has a value) → `QQ_Mismatches.MM.DD.YYYY.csv` (failing rows with Mismatch = Tract / Quarter Section / Both / Unreadable and a Note naming the problem) + a box with the counts | No (local CSV only) |
 
-While Mirror runs, PPIQ, AOI and DMD are disabled too (`g_lockedDuringMirror`), because
+While Mirror runs, PPIQ, AOI and NAI are disabled too (`g_lockedDuringMirror`), because
 their scripts share the Ark login (session.json) with Mirror's steps.
 
 ### Adding a new script button
@@ -159,7 +159,7 @@ flowchart TD
 
     ppiq --> ark_common
     tpp_lhpp --> ark_common
-    download_report --> ark_common
+    nai_download --> ark_common
     cost_to_extend --> ark_common
     str_verification --> ark_common
     close_dates --> ark_common
@@ -183,12 +183,12 @@ flowchart TD
 
 Third-party libraries: `playwright` (all Ark scripts, map_uploader; imported only when a browser
 is opened, so ark_common itself needs only the standard library), `openpyxl` (tpp_lhpp, doc_inventory,
-docket_updates), `PyPDF2` (doc_inventory), `requests`, `pyshp`, `shapely` (map_builder). docket_updates_slack calls
+docket_updates, docket_updates_slack), `PyPDF2` (doc_inventory), `requests`, `pyshp`, `shapely` (map_builder). docket_updates_slack calls
 Slack with the standard library (`urllib`); both docket scripts use `playwright` only for the RW report download.
 
 ### Typical Ark script flow
 
-Used by ppiq, tpp_lhpp, download_report, cost_to_extend, str_verification, close_dates, non_hbp_mi, case_unit_names and section_id_blank.
+Used by ppiq, tpp_lhpp, nai_download, cost_to_extend, str_verification, close_dates, non_hbp_mi, case_unit_names and section_id_blank.
 
 ```mermaid
 flowchart LR
@@ -277,7 +277,7 @@ report of what each did. Clicking a green button on its own still works exactly 
 1. `StartMirror` (mirror.cpp) refuses to start if a green button is busy (e.g. Index running on its
    own), then asks Yes/No, listing the steps and the ones that upload to Ark.
 2. It disables the green buttons and the other buttons sharing the Ark login (PPIQ, AOI,
-   DMD; `g_lockedDuringMirror`), relabels Mirror **Stop**, shows the progress bar
+   NAI; `g_lockedDuringMirror`), relabels Mirror **Stop**, shows the progress bar
    and status label (bottom-right, where Index's are) and runs
    `py mirror.py --stop-file "%TEMP%\phx_mirror_stop_<pid>_<run>.flag"` on a thread, reading its stdout.
    mirror.py runs inside a **kill-on-close job object**, so everything it starts (step processes,
@@ -379,6 +379,7 @@ A modeless popup; the main window stays disabled until it closes. One row per en
 sign-ins (passwords and the token show as dots). **Change** opens the `PickPath` picker (folder, or
 `.xlsx` for the workbook); **Save** takes the typed value. Either writes just that key (`SaveSetting`).
 `LoadSettings` runs once at startup; Organization and Rename read their folders with `GetSetting`.
+A renamed key's row keeps its old name in `oldKey` (e.g. `DataMeetingDownload` for `NewlyAcquiredInterest`): `LoadSettings` and `ark_common.read_folder(..., old_key=)` read it when the new key is unset.
 
 ### Organization (organize.cpp)
 
@@ -423,7 +424,7 @@ All under `%APPDATA%\PhoenixLandDept\`.
 
 | Section / key | Written by | Read by |
 |---|---|---|
-| `[Folders] DataMeetingDownload` | Settings dialog | download_report (default `Desktop\DMD`) |
+| `[Folders] NewlyAcquiredInterest` | Settings dialog | nai_download (NAI button; default `Desktop\NAI`). Named `DataMeetingDownload` before 2026-10-28; that key is still read when this one is unset |
 | `[Folders] STRVerification` | Settings dialog | str_verification (STR button; default `Desktop\STR`) |
 | `[Folders] AOI` | Settings dialog | str_verification `--aoi` (AOI button; default `Desktop\AOI`) |
 | `[Folders] CloseDates` | Settings dialog | close_dates (default `Desktop\Close Date`) |
@@ -520,43 +521,65 @@ flowchart LR
 ### Docket Updates Slack comparison
 
 The Slack version (docket_updates_slack.py) reads every board order case out of the messages and compares it
-with the RW cases report (`_REPORT_URL`, saved as `Slack_RW_Case_Info.csv`):
+with the RW cases report (`_REPORT_URL`, saved as `Slack_RW_Case_Info.csv`). It reads only the `Case …` header
+lines and the `(N Wells)` lines below them: sections, state headings and remarks are skipped, and sections aren't compared.
 
 ```mermaid
 flowchart LR
-    msgs["Slack_Docket_Updates rows"] -->|"_parse_message: Case header,<br/>(N Wells) groups, sections"| cases["cases<br/>(newest post with a status<br/>or sections wins; blanks<br/>filled from older posts)"]
-    report["RW_Case_Info.csv"] -->|"_read_rw"| rw["RW records"]
-    cases & rw -->|"_pair: same sections,<br/>then number-k, then leftovers"| pairs["pairs"]
-    pairs -->|"_differences"| out["Slack_Docket_Differences.csv"]
-    out -->|"_missing_rows:<br/>Not in RW rows only"| missing["Slack_Not_In_RW.csv"]
+    msgs["Parsed_Slack_Messages rows"] -->|"_parse_message:<br/>Case header lines,<br/>(N Wells) counts"| cases["cases<br/>(newest post with info<br/>wins; blanks filled<br/>from older posts)"]
+    report["Slack_RW_Case_Info.csv"] -->|"_read_rw"| rw["RW records"]
+    cases & rw -->|"_candidates: number<br/>and number-k"| pairs["case × RW record"]
+    pairs -->|"_differences → _compare<br/>(Match / Differs / Not in RW)"| results["results"]
+    results -->|"_write_differences:<br/>Differs rows only"| out["Slack_Docket_Differences.xlsx"]
+    results -->|"_upload_row: Differs rows<br/>of cases without sub-cases"| upload["Slack_Docket_Upload.csv<br/>(Cases Update, not uploaded)"]
+    results -->|"_missing_rows:<br/>Not in RW rows only"| missing["Slack_Not_In_RW.csv"]
 ```
 
 - **Cases.** Posts that share any case number are one case (`196-2025` and `196-2025 / 32-2025 FED`). It's taken
-  from the newest post with a status or sections, so a later reply like "Case 32384 was corrected" doesn't replace
-  it. Whatever that post leaves blank (status, type, applicant, sections) comes from the newest older post that has
-  it, and Notes says which ("Sections from the 09/09/2026 post"); a status written but not recognized isn't blank.
-  The other posts go to Notes and every number posted is looked up in RW. A header without a status takes it from
-  the next non-blank line only.
-- **Pairing.** A case's RW candidates are its number(s) and every `<number>-…` sub-case. Each `(N Wells)` group
-  (or the whole case when there are none) pairs with every candidate whose sections are the same land, then with
-  sub-case `<number>-k` by position (a single group: `<number>` itself), then a lone unpaired group takes all
-  leftovers. A group with no pair is *Not in RW*; a leftover `<number>` or `<number>-k` is *Not in message*
-  (Roman-numeral field-rules sub-cases such as `32665-V-1` are not listed).
-- **Sections** are compared as land: each section is a 4×4 grid of quarter-quarters, so Slack's
-  `11-156N-91W-W2` equals RW's `NW-11-156N-91W, SW-11-156N-91W`. Missing from RW / Extra in RW list the gap
-  in RW's style. Skipped when the message lists no sections.
+  from the newest post with a status, type, applicant or well count, so a later reply like "Case 32384 was corrected"
+  doesn't replace it. Whatever that post leaves blank (status, type, applicant, well count) comes from the newest
+  older post that has it, and Notes says which ("Status from the 09/09/2026 post"); a status written but not
+  recognized isn't blank. The other posts go to Notes and every number posted is looked up in RW. A header without
+  a status takes it from the next non-blank line only.
+- **Well count** (`_WELLS_RE`): the sum of the case's `(N Wells)` lines (`(4 Wells)` + `(5 Wells)-(CHEETAH UNIT)` = 9;
+  both blocks when a case is listed twice in one message), blank when it has none. It is compared with RW's
+  Number of Wells column (`_RW_WELLS`, found ignoring case) when the report has it. Slack's count is for the whole
+  case, so it is compared with the **total** of the RW records the case is compared with (one record: that
+  record's value; a blank or unreadable one counts 0). When the total differs, every record of the case differs
+  on Well Count and, with several records, Notes gives the total. A case with no `(N Wells)` line isn't compared.
+- **Which RW records** (`_candidates`): for each of the case's numbers, the number itself and its plain
+  sub-cases `<number>-1`, `<number>-2`, …; the case gets one row per record, in number order. Roman-numeral
+  field-rules sub-cases such as `32665-V-1` are used only when RW has none of those. No record at all is *Not in RW*.
 - **Status**: `_EXPECTED_STATUS` (GRANTED, PARTIALLY GRANTED, DENIED → Case Status Ordered; DISMISSED →
   Dismissed). Order Status (Granted / Denied; blank when dismissed) is compared only if the report has that column.
-- **Type**: `_TYPE_RULES`. Pooling → Pooling; Pooling and Spacing (either order: Spacing & Pooling,
-  Pooling/Spacing) → Pooling or any spacing type; its
-  AMENDMENT / RECONSIDERATION / EXCEPTION → any spacing type or Increased Density; Spacing → spacing types;
-  Authorize Wells, Additional Wells, Capacity → Increased Density; Authorize Drilling → Permit to Drill;
-  Revoke → Show Cause; anything else (Redefine Field Limits, Montana AMENDMENT – CONTESTED…) is not compared.
-- **Applicant** is shown side by side but never compared (Slack uses short names like `CONTINENTAL`).
-- **Slack_Not_In_RW.csv** lists the Slack side of every *Not in RW* row (one per missing well group): Case Number, State
-  as its postal code (`_STATE_CODES`; ND, MT; blank if no state heading), Applicant, Case Type as written, Case
-  Status / Order Status in RW's terms from `_EXPECTED_STATUS` (GRANTED → Ordered / Granted, DENIED → Ordered /
-  Denied, DISMISSED → Dismissed / blank; both blank when Slack has no result), and Sections as written in Slack.
+- **Type and applicant** are not compared (type since 2026-10-27) and aren't in the differences workbook; they
+  stay in `Slack_Not_In_RW.csv`. `_TYPE_RULES` (Slack type → RW types) is kept because `_parse_header` uses it to
+  tell a type from a status.
+- **RW Case Notes** (the report's `Case Notes` column, found ignoring case) are shown on each record's row and never
+  compared; blank when the report has no such column.
+- **Missing columns.** Order Status and Number of Wells (`_OPTIONAL_RW`) are compared only when the report has
+  them; the finish box names any it lacks.
+- **Slack_Docket_Differences.xlsx** has one row per RW record that differs; matches and *Not in RW* cases are left
+  out. Differences lists the fields, and each one's Slack and RW cells are highlighted yellow (`_HIGHLIGHT`: Status →
+  Slack Status + RW Case Status, Order Status → Slack Status + RW Order Status, Well Count → both sides).
+  Header bold, frozen and filterable; Link opens the Slack message.
+- **Slack_Docket_Upload.csv** is the best guess at a Cases Update for the Data Loader, written in RW's column names
+  (`_UPLOAD_HEADER`: Record Id, Case Status, Order Status, Number of Wells, Date Order Signed, Case Notes). It is
+  **not uploaded**: check it and load it by hand (an automatic upload waits until it has been tested). One row per
+  differing RW record, but only for a case whose single RW record is the case number itself; a case with sub-cases
+  or several records (duplicates, `196-2025 / 32-2025`) is left out and its differences rows say "review by hand".
+  The Data Loader writes a blank over Ark data, so every cell carries RW's own value unless Slack has one:
+  - Case Status / Order Status from Slack's result (`_EXPECTED_STATUS`); DISMISSED writes a blank Order Status on
+    purpose, to clear it. No result: RW's values.
+  - Number of Wells: Slack's well count (RW's when Slack has none).
+  - Date Order Signed: with a result, the date of the post the case was taken from, but only when later than RW's
+    (never moved back). Written MM/DD/YYYY; an RW date that can't be read is kept and noted.
+  - Case Notes: that post's link, a space, then RW's notes; left as they are if the link is already there.
+  - A column the RW report lacks is left out of the upload (the finish box names it), so it can't blank Ark's value.
+- **Slack_Not_In_RW.csv** lists the Slack side of every *Not in RW* row (one per case): Case Number, Applicant,
+  Case Type as written, and Case Status / Order Status in RW's terms from `_EXPECTED_STATUS` (GRANTED → Ordered /
+  Granted, DENIED → Ordered / Denied, DISMISSED → Dismissed / blank; both blank when Slack has no result), and
+  Well Count.
 
 ### Other shared files
 

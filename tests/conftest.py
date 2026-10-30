@@ -28,7 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # so tests can
 SANDBOX = pathlib.Path(tempfile.mkdtemp(prefix='phx_tests_'))  # session-wide fake APPDATA and [Folders]
 
 # Every [Folders] key a script reads; the fake settings.ini points each at a sandbox folder.
-FOLDER_KEYS = ['DataMeetingDownload', 'STRVerification', 'AOI', 'CloseDates', 'Maps', 'MirrorArchive',
+FOLDER_KEYS = ['NewlyAcquiredInterest','STRVerification', 'AOI', 'CloseDates', 'Maps', 'MirrorArchive',
                'CaseMatchup', 'NonHBPMI', 'CostToExtend', 'CaseUnitNames', 'DocketUpdates',
                'PPIQ', 'TPPLHPP', 'Deceased', 'Index', 'Organize', 'Rename', 'SIB', 'QQ']
 
@@ -118,8 +118,8 @@ class Folders:
         path.mkdir(exist_ok=True)
         return path
 
-    def read_folder(self, key, default):
-        """Replacement for ark_common.read_folder (ignores the hardcoded default)."""
+    def read_folder(self, key, default, old_key=None):
+        """Replacement for ark_common.read_folder (ignores the hardcoded default and old_key)."""
         return str(self[key])
 
 

@@ -4,19 +4,21 @@ workbook (docket_updates.py). Its files carry a Slack_ prefix so they don't clas
 
 Downloads every message Cheyanne Winn posted in the #docket-updates Slack channel (her posts
 and her thread replies) through the Slack Web API, using the user token in settings.ini
-[SlackCredentials] token. Writes Slack_Docket_Updates.csv (ID, Date, Time, Message, Reply To,
+[SlackCredentials] token. Writes Parsed_Slack_Messages.csv (ID, Date, Time, Message, Reply To,
 Slack TS, Link), newest first, to [Folders] DocketUpdates (default: Desktop\\Docket Updates),
 replacing the last export. ID is the local send time plus Slack's
 microseconds (YYYYMMDD-HHMMSS-ffffff), so it is unique per message.
 
-Then reads the board order cases out of those messages ("Case <number> (<applicant>): <type>:
-<status>", then section lines, optionally split into "(N Wells)" groups), downloads the RW cases
-report from Ark (Slack_RW_Case_Info.csv, same folder) and compares each case and well group with its
-RW record(s): Case Status / Order Status, Case Type and Sections. Writes Slack_Docket_Differences.csv
-(see _DIFF_HEADER) with one row per pairing, plus cases missing from RW and RW sub-cases no group
-matched. Also writes Slack_Not_In_RW.csv: the Slack side of every Not in RW row (case number, state as
-two letters, applicant, type, status in RW's Case Status / Order Status terms, sections as written).
-Shows a message box with both counts when done. Read-only: nothing is posted to Slack
+Then reads the board order cases out of those messages (the "Case <number> (<applicant>): <type>:
+<status>" lines, and the well count: the sum of the case's "(N Wells)" lines; sections and state headings
+are not read), downloads the RW cases report from Ark (Slack_RW_Case_Info.csv, same folder) and compares
+each case with its RW record(s): Case Status / Order Status and the well count (Number of Wells); Case
+Type and applicant are not compared. Writes Slack_Docket_Differences.xlsx (see _DIFF_HEADER): one row per
+RW record that differs, with its RW Case Notes, the differing Slack and RW cells highlighted yellow;
+matches and cases missing from RW are left out. Writes Slack_Docket_Upload.csv (see _upload_row): a
+best-guess Cases Update for the Data Loader with a row per differing RW record whose case has no
+sub-cases (those are left to review by hand); it is NOT uploaded. Writes Slack_Not_In_RW.csv: the Slack side of every case missing from RW (case number, applicant, type, status
+in RW's Case Status / Order Status terms, well count). Shows a message box with both counts when done. Read-only: nothing is posted to Slack
 or uploaded to Ark.
 """
 import csv
@@ -31,6 +33,10 @@ from html import unescape
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+
 import ark_common
 
 _DEFAULT_DIR = r'C:\Users\Ethan Mesecher\Desktop\Docket Updates'  # output folder used when [Folders] DocketUpdates is unset
@@ -41,7 +47,7 @@ _API_URL = 'https://slack.com/api/'  # Slack Web API base
 _PAGE_SIZE = 200  # messages per history / replies request (Slack's recommended page size)
 _MAX_RETRIES = 5  # times one request is retried after Slack rate-limits it (HTTP 429)
 _KEPT_SUBTYPES = {None, 'thread_broadcast', 'file_share', 'me_message'}  # message kinds exported; joins, topic changes etc. are skipped
-_OUTPUT_FILE = 'Slack_Docket_Updates.csv'  # export file name (overwritten each run)
+_OUTPUT_FILE = 'Parsed_Slack_Messages.csv'  # export file name (overwritten each run)
 _OUTPUT_HEADER = ['ID', 'Date', 'Time', 'Message', 'Reply To', 'Slack TS', 'Link']  # export columns
 _LINK_RE = re.compile(r'<((?:https?|mailto):[^|>]*)(?:\|([^>]*))?>')  # Slack link markup <url|label> or <url>
 _NO_TOKEN_HELP = (  # message box shown when settings.ini has no Slack token
@@ -53,29 +59,32 @@ _NO_TOKEN_HELP = (  # message box shown when settings.ini has no Slack token
     '(see docs/ARCHITECTURE.md, "Slack token").'
 )
 
-_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=d240bce207ca4cac3da5f8dc'  # Ark report of RW cases (Record Id, Applicant, Case Number, Case Status, Case Type, Sections; Order Status if added)
+_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=d240bce207ca4cac3da5f8dc'  # Ark report of RW cases (uses Record Id, Case Number, Case Status; Order Status, Number of Wells, Case Notes if there)
 _REPORT_FILE = 'Slack_RW_Case_Info.csv'  # saved name of the RW cases report (overwritten each run)
-_DIFF_FILE = 'Slack_Docket_Differences.csv'  # comparison file name (overwritten each run)
-_DIFF_HEADER = ['Result', 'Differences', 'Case Number', 'RW Case Number', 'Record Id', 'Group', 'State',
-                'Posted', 'Slack Applicant', 'RW Applicant', 'Slack Type', 'RW Type', 'Slack Status',
-                'RW Case Status', 'RW Order Status', 'Slack Sections', 'RW Sections', 'Missing from RW',
-                'Extra in RW', 'Notes', 'Link']  # comparison columns
-_MATCH, _DIFFERS, _NOT_IN_RW, _NOT_IN_MESSAGE = 'Match', 'Differs', 'Not in RW', 'Not in message'  # Result values
+_RW_WELLS = 'Number of Wells'  # RW report column with a record's well count (found ignoring case)
+_RW_CASE_NOTES = 'Case Notes'  # RW report column with a record's notes, shown but never compared (found ignoring case)
+_RW_DATE_SIGNED = 'Date Order Signed'  # RW report column read for the upload, which only ever moves it forward
+_OPTIONAL_RW = ('Order Status', _RW_WELLS)  # RW report columns compared only when the report has them
+_UPLOAD_FILE = 'Slack_Docket_Upload.csv'  # best-guess Cases Update for the Data Loader; not uploaded (overwritten each run)
+_UPLOAD_HEADER = ['Record Id', 'Case Status', 'Order Status', _RW_WELLS, _RW_DATE_SIGNED,
+                  _RW_CASE_NOTES]  # upload columns, named as in the RW report; one the report lacks is left out
+_DIFF_FILE = 'Slack_Docket_Differences.xlsx'  # workbook of the RW records that differ (overwritten each run)
+_DIFF_HEADER = ['Differences', 'Case Number', 'RW Case Number', 'Record Id', 'Posted', 'Slack Status',
+                'RW Case Status', 'RW Order Status', 'Slack Well Count', 'RW Well Count', 'RW Case Notes',
+                'Notes', 'Link']  # differences workbook columns
+_HIGHLIGHT = {  # difference -> the differences workbook columns highlighted for it
+    'Status': ('Slack Status', 'RW Case Status'),
+    'Order Status': ('Slack Status', 'RW Order Status'),
+    'Well Count': ('Slack Well Count', 'RW Well Count'),
+}
+_YELLOW_FILL = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # highlight of a differing cell
+_MATCH, _DIFFERS, _NOT_IN_RW = 'Match', 'Differs', 'Not in RW'  # Result values
 _MISSING_FILE = 'Slack_Not_In_RW.csv'  # Slack side of every Not in RW row (overwritten each run)
-_MISSING_HEADER = ['Case Number', 'State', 'Applicant', 'Case Type', 'Case Status', 'Order Status',
-                   'Sections']  # Slack_Not_In_RW.csv columns; statuses in RW's terms, sections as written in Slack
-_STATE_CODES = dict(zip((  # state heading (title case) -> postal code for Slack_Not_In_RW.csv
-    'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado', 'Connecticut', 'Delaware', 'Florida',
-    'Georgia', 'Hawaii', 'Idaho', 'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine',
-    'Maryland', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri', 'Montana', 'Nebraska',
-    'Nevada', 'New Hampshire', 'New Jersey', 'New Mexico', 'New York', 'North Carolina', 'North Dakota', 'Ohio',
-    'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota', 'Tennessee', 'Texas',
-    'Utah', 'Vermont', 'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming'), (
-    'AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH '
-    'OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY').split()))
+_MISSING_HEADER = ['Case Number', 'Applicant', 'Case Type', 'Case Status', 'Order Status',
+                   'Well Count']  # Slack_Not_In_RW.csv columns; statuses in RW's terms
 _SPACING_TYPES = ('Establish Spacing', 'Establish Overlapping Spacing', 'Establish Temporary Spacing',
                   'Establish Overlapping Temporary Spacing', 'Establish Permanent Spacing')  # RW types that count as spacing
-_TYPE_RULES = [  # (pattern on the uppercased Slack type, RW types it matches or None = not compared); first hit wins. POOLING and SPACING in any order or joined any way count as Pooling and Spacing
+_TYPE_RULES = [  # (pattern on the uppercased Slack type, RW types it matches or None = no RW type); first hit wins. POOLING and SPACING in any order or joined any way count as Pooling and Spacing. Not compared with RW since 2026-10-27; _parse_header uses it to tell a type from a status
     (re.compile(r'REDEFINE FIELD|BOARD ORDER BY LAW'), None),
     (re.compile(r'^(?=.*POOLING)(?=.*SPACING).*(AMENDMENT|RECONSIDERATION|EXCEPTION)'), _SPACING_TYPES + ('Increased Density',)),
     (re.compile(r'^(?=.*POOLING).*SPACING'), ('Pooling',) + _SPACING_TYPES),
@@ -93,13 +102,7 @@ _EXPECTED_STATUS = {  # Slack result -> (RW Case Status, RW Order Status) it sho
     'DISMISSED': ('Dismissed', ''),
 }
 _HEADER_RE = re.compile(r'^Cases?\s*(\d[^(:]*)(.*)$', re.I)  # case header: number text, then (applicant): type: status
-_STATE_RE = re.compile(r'^[A-Z][A-Z ]*[A-Z]:$')  # state heading such as NORTH DAKOTA:
-_BOARD_RE = re.compile(r'^Board Order Updates', re.I)  # message heading, ends the case above it
-_WELLS_RE = re.compile(r'^\(?\s*\d+[\s-]*WELLS?\b', re.I)  # "(4 Wells)" line: starts a well group
-_SECTION_RE = re.compile(r'^(\d{1,2})\s*-\s*(\d{1,3})\s*([NS])\s*-\s*(\d{1,3})\s*([EW]?)(.*)$', re.I)  # Slack section line: S-TN-RW then the part (-ALL, -W2, ...)
-_RW_SECTION_RE = re.compile(r'^(?:([NSEW0-9/]+)-)?(\d{1,2})-(\d{1,3})([NS])-(\d{1,3})([EW])$')  # RW section: optional part prefix (NW-) then S-TN-RW
-_PART_RE = re.compile(r'[NS][EW]|[NSEW]2')  # one aliquot step: a quarter (NE) or a half (W2)
-_QUARTERS = (('NW', 0, 0), ('NE', 0, 2), ('SW', 2, 0), ('SE', 2, 2))  # quarter name and its top-left cell in the 4x4 grid
+_WELLS_RE = re.compile(r'^\(?\s*(\d+)[\s-]*WELLS?\b', re.I)  # "(4 Wells)" / "(5 Wells)-(CHEETAH UNIT)" line: a well group and its count
 
 
 class SlackError(Exception):
@@ -208,103 +211,6 @@ def _write_csv(path, header, rows):
         writer.writerows(rows)
 
 
-# ---- Sections: each section is a 4x4 grid of quarter-quarter cells (row 0 north, column 0 west) ----
-
-def _part_cells(part):
-    """Grid cells (row, col) an aliquot covers: ALL / AL / blank, W2, NE, S2SE, E2W2, ...
-    Steps apply right to left (S2SE is the south half of the SE quarter). None if unreadable."""
-    part = part.upper().replace('/', '').replace(' ', '')
-    if part in ('', 'ALL', 'AL'):
-        return {(r, c) for r in range(4) for c in range(4)}
-    steps = _PART_RE.findall(part)
-    if ''.join(steps) != part:
-        return None
-    r0, r1, c0, c1 = 0, 4, 0, 4
-    for step in reversed(steps):
-        for ch in step:
-            if ch in 'NS' and r1 - r0 > 1:
-                mid = (r0 + r1) // 2
-                r0, r1 = (r0, mid) if ch == 'N' else (mid, r1)
-            elif ch in 'EW' and c1 - c0 > 1:
-                mid = (c0 + c1) // 2
-                c0, c1 = (c0, mid) if ch == 'W' else (mid, c1)
-    return {(r, c) for r in range(r0, r1) for c in range(c0, c1)}
-
-
-def _section_key(sec, twp, tdir, rng, rdir):
-    """Section name the way RW writes it, e.g. 11-156N-91W."""
-    return f'{int(sec)}-{int(twp)}{tdir.upper()}-{int(rng)}{rdir.upper()}'
-
-
-def _slack_section(line, state):
-    """(cells, notes) of a Slack section line such as 11-156N-91W-W2 or 16-156N-92W-NW, E2; notes are
-    any parenthesized remarks. Cells are (section, row, col). None if it isn't a readable section line.
-    A missing range direction means W, except in Montana where it is unreadable."""
-    m = _SECTION_RE.match(line)
-    if not m:
-        return None
-    sec, twp, tdir, rng, rdir, rest = m.groups()
-    if not rdir:
-        if state == 'Montana':
-            return None
-        rdir = 'W'
-    notes = [n.strip() for n in re.findall(r'\(([^)]*)\)', rest)]
-    rest = re.sub(r'\([^)]*\)', '', rest).strip(' -:,.')
-    key = _section_key(sec, twp, tdir, rng, rdir)
-    cells = set()
-    for part in rest.split(','):
-        got = _part_cells(part)
-        if got is None:
-            return None
-        cells |= {(key, r, c) for r, c in got}
-    return cells, notes
-
-
-def _rw_cells(sections):
-    """Cells of an RW Sections value ("NW-11-156N-91W, 12-156N-91W"). An unreadable entry becomes
-    its own cell (text, None, None), so it always shows as a difference."""
-    cells = set()
-    for item in (sections or '').split(','):
-        item = ''.join(item.split()).upper()
-        if not item:
-            continue
-        m = _RW_SECTION_RE.match(item)
-        got = _part_cells(m[1] or 'ALL') if m else None
-        if got is None:
-            cells.add((item, None, None))
-            continue
-        key = _section_key(*m.groups()[1:])
-        cells |= {(key, r, c) for r, c in got}
-    return cells
-
-
-def _section_order(key):
-    """Sort key for section names: township, range, then section; unreadable text last."""
-    nums = [int(n) for n in re.findall(r'\d+', key)]
-    return (0, nums[1], nums[2], nums[0]) if len(nums) == 3 else (1, 0, 0, 0)
-
-
-def _describe(cells):
-    """RW-style text for cells: 11-156N-91W for a whole section, NW-11-156N-91W for a whole quarter,
-    NENW-11-156N-91W for a quarter-quarter, sorted by township, range, section."""
-    by_key = defaultdict(set)
-    for key, r, c in cells:
-        by_key[key].add((r, c))
-    out = []
-    for key in sorted(by_key, key=lambda k: (_section_order(k), k)):
-        got = by_key[key]
-        if (None, None) in got or len(got) == 16:
-            out.append(key)
-            continue
-        for name, r0, c0 in _QUARTERS:
-            quarter = {(r0 + dr, c0 + dc) for dr in (0, 1) for dc in (0, 1)}
-            if quarter <= got:
-                out.append(f'{name}-{key}')
-            else:
-                out += [f'{"NS"[r - r0]}{"WE"[c - c0]}{name}-{key}' for r, c in sorted(quarter & got)]
-    return ', '.join(out)
-
-
 # ---- Reading cases out of the messages ----
 
 def _status(text):
@@ -315,7 +221,7 @@ def _status(text):
 
 
 def _rw_types(slack_type):
-    """RW Case Types that count as a match for a Slack case type (_TYPE_RULES); None when not compared."""
+    """RW Case Types that count as a match for a Slack case type (_TYPE_RULES); None when it has none."""
     norm = ' '.join(slack_type.upper().split())
     for pattern, types in _TYPE_RULES:
         if pattern.search(norm):
@@ -358,59 +264,39 @@ def _parse_header(line):
             'status_text': status_text, 'notes': [f'({g})' for g in groups[:-1]] + notes}
 
 
-def _group(label):
-    """A new well group: its label ("4 Wells"), section lines as written, and their cells."""
-    return {'label': label, 'lines': [], 'cells': set()}
-
-
 def _parse_message(text):
-    """Board order cases in one message, in order: the header fields plus state, groups (one per
-    "(N Wells)" line, else one unnamed group) and notes (unit names and other lines inside the case,
-    unreadable section lines marked "Unread:"). A header with no status takes one only from the first
-    non-blank line below it, so a remark further down ("Prior application DENIED") stays a note."""
-    cases, case, state, below_header = [], None, '', False
+    """Board order cases in one message, in order: the header fields of each "Case ..." line plus
+    wells, the sum of the "(N Wells)" lines below it (None when there are none). Other lines (state
+    headings, sections, unit names) are skipped, except that a header with no status takes one from
+    the first non-blank line below it, so a remark further down ("Prior application DENIED") isn't
+    taken as the status."""
+    cases, below_header = [], False
     for raw in (text or '').split('\n'):
         line = ' '.join(raw.replace('*', ' ').split())
-        header = _parse_header(line)
-        if header:
-            case = dict(header, state=state, groups=[])
-            cases.append(case)
-        elif _STATE_RE.match(line):
-            state, case = line[:-1].title(), None
-        elif _BOARD_RE.match(line):
-            case = None
-        elif case is None or not line.strip('-'):
+        if not line.strip('-'):
             continue
-        elif below_header and not case['status'] and _status(line) and not re.search(r'\d', line):
-            case['status'] = _status(line)
-        elif _WELLS_RE.match(line):
-            case['groups'].append(_group(' '.join(re.sub(r'[()]', ' ', line).split())))
-        else:
-            section = _slack_section(line, state)
-            if section is None:
-                case['notes'].append(f'Unread: {line}' if re.match(r'\d+\s*-', line) else line)
-            else:
-                if not case['groups']:
-                    case['groups'].append(_group(''))
-                group = case['groups'][-1]
-                group['lines'].append(line.strip(' ,.'))
-                group['cells'] |= section[0]
-                case['notes'] += section[1]
+        header = _parse_header(line)
+        wells = _WELLS_RE.match(line)
+        if header:
+            cases.append(dict(header, wells=None))
+        elif below_header and not cases[-1]['status'] and _status(line) and not re.search(r'\d', line):
+            cases[-1]['status'] = _status(line)
+        elif cases and wells:
+            cases[-1]['wells'] = (cases[-1]['wells'] or 0) + int(wells[1])
         below_header = bool(header)
-    for case in cases:
-        case['groups'] = [g for g in case['groups'] if g['lines']] or [_group('')]
     return cases
 
 
 def _has_info(post):
-    """True when a post of a case has a status or sections (a bare mention like "Case 32384 was
-    corrected" has neither)."""
-    return bool(post['status']) or any(g['lines'] for g in post['groups'])
+    """True when a post of a case says more than its number: a status (also one not recognized),
+    type, applicant or well count. A bare mention like "Case 32384 was corrected" has none of them."""
+    return bool(post['status'] or post['status_text'] or post['type'] or post['applicant']
+                or post['wells'] is not None)
 
 
 def _fill_blanks(case, older):
-    """Copy each field case leaves blank (status, type, applicant, sections) from older, another post
-    of the same case. A status written but not recognized ("CONTINUED") isn't blank. Returns the
+    """Copy each field case leaves blank (status, type, applicant, well count) from older, another
+    post of the same case. A status written but not recognized ("CONTINUED") isn't blank. Returns the
     names of the fields copied."""
     filled = []
     if not case['status'] and not case['status_text'] and older['status']:
@@ -420,19 +306,19 @@ def _fill_blanks(case, older):
         if not case[field] and older[field]:
             case[field] = older[field]
             filled.append(name)
-    if not any(g['lines'] for g in case['groups']) and any(g['lines'] for g in older['groups']):
-        case['groups'] = older['groups']
-        filled.append('Sections')
+    if case['wells'] is None and older['wells'] is not None:
+        case['wells'] = older['wells']
+        filled.append('Well Count')
     return filled
 
 
 def _cases_from(rows):
     """Cases from the export rows (newest first), each with posted (date) and link added. Posts that
     share any case number are one case ("196-2025" and "196-2025 / 32-2025 FED"), taken from the newest
-    post with a status or sections (all its blocks in that message), so a bare later mention ("Case
-    32384 was corrected") doesn't replace it. Fields it leaves blank come from the newest older post
-    that has them (_fill_blanks). Other posts are added to its notes with their status, each filled
-    field says which post it came from, and every number posted is looked up in RW."""
+    post that says more than the number (_has_info), so a bare later mention ("Case 32384 was
+    corrected") doesn't replace it. Fields it leaves blank come from the newest older post that has
+    them (_fill_blanks). Other posts are added to its notes with their status, each filled field says
+    which post it came from, and every number posted is looked up in RW."""
     posts_by_case, by_number = [], {}
     for row in rows:
         for case in _parse_message(row[3]):
@@ -444,8 +330,9 @@ def _cases_from(rows):
             same = next((p for p in posts if p['msg_id'] == case['msg_id']), None)
             if same is None:
                 posts.append(case)
-            else:  # listed again in the same message: one post with both blocks' well groups
-                same['groups'] = [g for g in same['groups'] + case['groups'] if g['lines']] or [_group('')]
+            else:  # listed again in the same message: kept as one post, both blocks' wells counted
+                if same['wells'] is not None and case['wells'] is not None:
+                    same['wells'] += case['wells']
                 same['notes'] += ['Listed more than once in this message'] + case['notes']
                 same['numbers'] += [n for n in case['numbers'] if n not in same['numbers']]
                 _fill_blanks(same, case)
@@ -471,95 +358,122 @@ def _cases_from(rows):
 # ---- Comparing with RW ----
 
 def _read_rw(path):
-    """RW cases from the Ark report as dicts of its columns plus cells (from Sections), and whether
-    the report has an Order Status column. A row with a blank Record Id continues the case above
-    (Ark puts extra list values there): its Sections are added to that case."""
-    cases = []
+    """RW cases from the Ark report as dicts of its columns, and the set of its column names. Names are
+    trimmed, and the _UPLOAD_HEADER columns are found ignoring case ("number of wells"). Rows with a
+    blank Record Id (Ark's extra list values for the case above) are skipped."""
+    canonical = {c.lower(): c for c in _UPLOAD_HEADER}
     with open(path, newline='', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
-        has_order = 'Order Status' in (reader.fieldnames or [])
-        for row in reader:
-            row = {k: (v or '').strip() for k, v in row.items() if isinstance(k, str)}
-            if row.get('Record Id'):
-                cases.append(row)
-            elif cases and row.get('Sections'):
-                cases[-1]['Sections'] = ', '.join(filter(None, [cases[-1].get('Sections'), row['Sections']]))
-    for case in cases:
-        case['cells'] = _rw_cells(case.get('Sections'))
-    return cases, has_order
+        names = {}
+        for name in reader.fieldnames or []:
+            names[name] = canonical.get(name.strip().lower(), name.strip())
+        rows = [{names[k]: (v or '').strip() for k, v in row.items() if isinstance(k, str)} for row in reader]
+    return [r for r in rows if r.get('Record Id')], set(names.values())
+
+
+def _well_number(text):
+    """An RW Number of Wells value as an int ('4', '4.0'), or None when blank or not a whole number."""
+    try:
+        value = float(text.replace(',', ''))
+    except ValueError:
+        return None
+    return int(value) if value.is_integer() else None
+
+
+def _rw_date(text):
+    """An RW date ('10/05/2026', '2026-10-05', '10/05/2026 12:00 AM') as a date, or None when blank or unreadable."""
+    try:
+        return ark_common.parse_date(text.split(' ')[0]) if text else None
+    except ValueError:
+        return None
 
 
 def _candidates(case, index):
-    """RW records for a case's numbers: the number itself and its sub-cases (<number>-...)."""
+    """RW records a case is compared with, by case number: for each of its numbers, the number itself
+    and its plain sub-cases (<number>-1, <number>-2, ...). Only when RW has none of those are its other
+    sub-cases used: a field-rules case has dozens of Roman-numeral ones (32665-V-1) and an order
+    covers only a few of them."""
     found = []
     for n in case['numbers']:
-        for rec in index.get(n.split('-')[0], []):
-            cn = rec.get('Case Number', '')
-            if (cn == n or cn.startswith(n + '-')) and rec not in found:
-                found.append(rec)
-    return found
+        recs = [r for r in index.get(n.split('-')[0], [])
+                if r.get('Case Number') == n or r.get('Case Number', '').startswith(n + '-')]
+        plain = [r for r in recs if re.fullmatch(rf'{re.escape(n)}(-\d+)?', r.get('Case Number', ''))]
+        found += [r for r in plain or recs if r not in found]
+    return sorted(found, key=lambda r: r.get('Case Number', ''))
 
 
-def _pair(case, candidates):
-    """Pair each well group with RW records: first every record with the same sections, then by
-    position (group k with sub-case <number>-k, a lone group with <number> itself), then a single
-    group still unpaired takes every record left. Returns (pairs, unpaired groups, unpaired records)."""
-    groups = case['groups']
-    pairs, used, open_groups = [], [], []
-    for g in groups:
-        same = [r for r in candidates if g['cells'] and r['cells'] == g['cells']]
-        pairs += [(g, r) for r in same]
-        used += same
-        if not same:
-            open_groups.append(g)
-    unpaired = []
-    for g in open_groups:
-        k = groups.index(g) + 1
-        names = {f'{n}-{k}' for n in case['numbers']} if len(groups) > 1 else set(case['numbers'])
-        hit = [r for r in candidates if r not in used and r.get('Case Number') in names]
-        pairs += [(g, r) for r in hit]
-        used += hit
-        if not hit:
-            unpaired.append(g)
-    left = [r for r in candidates if r not in used]
-    if len(unpaired) == 1 and left:
-        pairs += [(unpaired[0], r) for r in left]
-        unpaired, left = [], []
-    pairs.sort(key=lambda p: (groups.index(p[0]), p[1].get('Case Number', '')))
-    return pairs, unpaired, left
-
-
-def _differences(case, group, rec, has_order):
-    """Fields where an RW record disagrees with the Slack case / well group: Status (Case Status),
-    Order Status (only when the report has it), Type (_TYPE_RULES) and Sections (skipped when the
-    message lists none)."""
+def _differences(case, rec, columns, rw_wells=None):
+    """Fields where an RW record disagrees with the Slack case: Status (Case Status), Order Status and
+    Well Count. Order Status and Well Count only when the report has the column (columns); Well Count
+    only when Slack gives one, against rw_wells (the case's RW total, see _compare). Type and applicant
+    aren't compared."""
     diffs = []
     expected = _EXPECTED_STATUS.get(case['status'])
     if expected:
         if rec.get('Case Status', '').lower() != expected[0].lower():
             diffs.append('Status')
-        if has_order and rec.get('Order Status', '').lower() != expected[1].lower():
+        if 'Order Status' in columns and rec.get('Order Status', '').lower() != expected[1].lower():
             diffs.append('Order Status')
-    types = _rw_types(case['type'])
-    if types is not None and rec.get('Case Type', '').lower() not in {t.lower() for t in types}:
-        diffs.append('Type')
-    if group['cells'] and group['cells'] != rec['cells']:
-        diffs.append('Sections')
+    if case['wells'] is not None and _RW_WELLS in columns and rw_wells != case['wells']:
+        diffs.append('Well Count')
     return diffs
 
 
 def _rw_fields(rec):
-    """RW-side columns of a comparison row."""
+    """RW-side columns of a comparison row (a readable well count as a number; Case Notes as given)."""
+    wells = rec.get(_RW_WELLS, '')
     return {'RW Case Number': rec.get('Case Number', ''), 'Record Id': rec.get('Record Id', ''),
-            'RW Applicant': rec.get('Applicant', ''), 'RW Type': rec.get('Case Type', ''),
             'RW Case Status': rec.get('Case Status', ''), 'RW Order Status': rec.get('Order Status', ''),
-            'RW Sections': rec.get('Sections', '')}
+            'RW Well Count': wells if _well_number(wells) is None else _well_number(wells),
+            'RW Case Notes': rec.get(_RW_CASE_NOTES, '')}
 
 
-def _compare(cases, rw, has_order):
-    """Comparison rows (see _DIFF_HEADER) for every case, and a Counter of their Results. Each well
-    group gets one row per paired RW record (Match / Differs) or a Not in RW row; RW sub-cases of a
-    case that no group paired with get Not in message rows."""
+def _upload_columns(columns):
+    """The _UPLOAD_HEADER columns written: Record Id plus each one the RW report has (a column the
+    report lacks can't carry RW's own value forward, and a blank would clear Ark's)."""
+    return [c for c in _UPLOAD_HEADER if c == 'Record Id' or c in columns]
+
+
+def _upload_row(case, rec, columns):
+    """(Slack_Docket_Upload.csv row for an RW record, notes for its differences row). Slack's value
+    where it has one and RW's own value everywhere else, since the Data Loader writes a blank over Ark:
+    - Case Status / Order Status: from Slack's result (_EXPECTED_STATUS); DISMISSED writes a blank
+      Order Status on purpose, to clear it.
+    - Number of Wells: Slack's well count.
+    - Date Order Signed: when Slack has a result, the date of the post the case was taken from, but
+      only when that is later than RW's (never moved back; an RW date that can't be read is kept and
+      noted). A readable date is written MM/DD/YYYY.
+    - Case Notes: that post's link, a space, then RW's notes; left as they are when they already have it."""
+    values, notes = dict(rec), []
+    expected = _EXPECTED_STATUS.get(case['status'])
+    have = rec.get(_RW_DATE_SIGNED, '')
+    signed = _rw_date(have)
+    if have and signed is None:
+        notes.append(f'RW {_RW_DATE_SIGNED} "{have}" not read as a date: kept in the upload')
+    elif expected:
+        posted = ark_common.parse_date(case['posted'])
+        signed = max(signed or posted, posted)
+    if expected:
+        values['Case Status'], values['Order Status'] = expected
+    if signed:
+        values[_RW_DATE_SIGNED] = signed.strftime('%m/%d/%Y')
+    if case['wells'] is not None:
+        values[_RW_WELLS] = str(case['wells'])
+    old = rec.get(_RW_CASE_NOTES, '')
+    if case['link'] and case['link'] not in old:
+        values[_RW_CASE_NOTES] = f'{case["link"]} {old}'.strip()
+    return [values.get(c, '') for c in _upload_columns(columns)], notes
+
+
+def _compare(cases, rw, columns):
+    """Comparison rows for every case as dicts of _DIFF_HEADER columns plus Result, Slack Applicant and
+    Slack Type (for _missing_rows) and Upload (the record's Slack_Docket_Upload.csv row, or None), and a
+    Counter of their Results. A case gets one row per RW record found for it (_candidates; Match /
+    Differs), or a Not in RW row when there is none. Slack's well count is the whole case's, so it is
+    compared with the total of those records' Number of Wells (a blank or unreadable one counts 0); a
+    note gives the total when several records differ from it. A differing record gets an upload row
+    (_upload_row) only when it is the case's single RW record and has the case number itself; a case
+    with sub-cases or several records (duplicates, two numbers) is noted for review by hand instead."""
     index = defaultdict(list)
     for rec in rw:
         index[rec.get('Case Number', '').split('-')[0]].append(rec)
@@ -567,56 +481,79 @@ def _compare(cases, rw, has_order):
 
     def add(fields):
         """Append one row from a dict of column values and count its Result."""
-        rows.append([fields.get(h, '') for h in _DIFF_HEADER])
+        rows.append(fields)
         counts[fields['Result']] += 1
 
     for case in cases:
         notes = list(case['notes'])
-        if case['type'] and _rw_types(case['type']) is None:
-            notes.append('Type not compared')
-        if not any(g['cells'] for g in case['groups']):
-            notes.append('No sections in the message')
-        slack = {'Case Number': case['number'], 'State': case['state'], 'Posted': case['posted'],
-                 'Slack Applicant': case['applicant'], 'Slack Type': case['type'], 'Slack Status': case['status'],
-                 'Notes': '; '.join(notes), 'Link': case['link']}
-        pairs, unpaired, left = _pair(case, _candidates(case, index))
-        many = len(case['groups']) > 1
-        for k, g in enumerate(case['groups'], 1):
-            label = f'{k} of {len(case["groups"])}' + (f' ({g["label"]})' if g['label'] else '') if many else g['label']
-            row = dict(slack, Group=label, **{'Slack Sections': ', '.join(g['lines'])})
-            for pg, rec in pairs:
-                if pg is g:
-                    diffs = _differences(case, g, rec, has_order)
-                    missing = g['cells'] - rec['cells'] if g['cells'] else set()
-                    extra = rec['cells'] - g['cells'] if g['cells'] else set()
-                    add(dict(row, Result=_DIFFERS if diffs else _MATCH, Differences=', '.join(diffs),
-                             **_rw_fields(rec), **{'Missing from RW': _describe(missing),
-                                                   'Extra in RW': _describe(extra)}))
-            if g in unpaired:
-                add(dict(row, Result=_NOT_IN_RW))
-        # Only the case itself and plain <number>-<k> sub-cases: a field-rules case has dozens of
-        # Roman-numeral sub-cases (32665-V-1) and an order covers only a few of them
-        plain = set(case['numbers'])
-        left = [r for r in left if r.get('Case Number') in plain
-                or any(re.fullmatch(rf'{re.escape(n)}-\d+', r.get('Case Number', '')) for n in plain)]
-        for rec in left:
-            add(dict(slack, Result=_NOT_IN_MESSAGE, **_rw_fields(rec),
-                     Notes='; '.join(['No well group in the message has these sections'] + notes)))
+        candidates = _candidates(case, index)
+        rw_wells = sum(_well_number(r.get(_RW_WELLS, '')) or 0 for r in candidates)
+        if len(candidates) > 1 and case['wells'] is not None and _RW_WELLS in columns and rw_wells != case['wells']:
+            notes.append(f"Slack's {case['wells']} wells compared with the {len(candidates)} RW records' "
+                         f'total of {rw_wells}')
+        if any(r.get('Case Number') not in case['numbers'] for r in candidates):
+            held = 'sub-cases'
+        elif len(candidates) > 1:
+            held = f'{len(candidates)} RW records'
+        else:
+            held = ''
+        slack = {'Case Number': case['number'], 'Posted': case['posted'], 'Slack Applicant': case['applicant'],
+                 'Slack Type': case['type'], 'Slack Status': case['status'],
+                 'Slack Well Count': '' if case['wells'] is None else case['wells'],
+                 'Link': case['link'], 'Upload': None}
+        for rec in candidates:
+            diffs = _differences(case, rec, columns, rw_wells)
+            row_notes = list(notes)
+            upload = None
+            if diffs and held:
+                row_notes.append(f'Not in {_UPLOAD_FILE} ({held}): review by hand')
+            elif diffs:
+                upload, more = _upload_row(case, rec, columns)
+                row_notes += more
+            add(dict(slack, Result=_DIFFERS if diffs else _MATCH, Differences=', '.join(diffs), Upload=upload,
+                     Notes='; '.join(row_notes), **_rw_fields(rec)))
+        if not candidates:
+            add(dict(slack, Result=_NOT_IN_RW, Notes='; '.join(notes)))
     return rows, counts
 
 
-def _missing_rows(diff_rows):
+def _write_differences(path, results):
+    """Write the Differs rows of results to the differences workbook: header bold, frozen and
+    filterable, each difference's Slack and RW cells highlighted (_HIGHLIGHT) and Link clickable."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Differences'
+    ws.append(_DIFF_HEADER)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for r in results:
+        if r['Result'] != _DIFFERS:
+            continue
+        ws.append([r.get(h, '') for h in _DIFF_HEADER])
+        for diff in r['Differences'].split(', '):
+            for h in _HIGHLIGHT[diff]:
+                ws.cell(ws.max_row, _DIFF_HEADER.index(h) + 1).fill = _YELLOW_FILL
+        if r['Link']:
+            link = ws.cell(ws.max_row, _DIFF_HEADER.index('Link') + 1)
+            link.hyperlink, link.style = r['Link'], 'Hyperlink'
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = ws.dimensions
+    for i, column in enumerate(ws.columns, 1):
+        ws.column_dimensions[get_column_letter(i)].width = min(50, max(len(str(c.value or '')) for c in column) + 2)
+    wb.save(path)
+
+
+def _missing_rows(results):
     """Slack_Not_In_RW.csv rows (see _MISSING_HEADER) from the comparison rows: the Slack side of each Not in
-    RW row, the state as its postal code (kept as is if unknown) and the Slack result as RW's Case
-    Status / Order Status (_EXPECTED_STATUS; both blank when Slack has no result)."""
+    RW row, with the Slack result as RW's Case Status / Order Status (_EXPECTED_STATUS; both blank when
+    Slack has no result) and the Slack well count."""
     out = []
-    for row in diff_rows:
-        r = dict(zip(_DIFF_HEADER, row))
+    for r in results:
         if r['Result'] != _NOT_IN_RW:
             continue
         case_status, order_status = _EXPECTED_STATUS.get(r['Slack Status'], ('', ''))
-        out.append([r['Case Number'], _STATE_CODES.get(r['State'], r['State']), r['Slack Applicant'],
-                    r['Slack Type'], case_status, order_status, r['Slack Sections']])
+        out.append([r['Case Number'], r['Slack Applicant'], r['Slack Type'], case_status, order_status,
+                    r['Slack Well Count']])
     return out
 
 
@@ -628,21 +565,33 @@ def _summary(rows, out_path):
             f'{rows[-1][1]} to {rows[0][1]}.\n\nSaved: {out_path}')
 
 
-def _compare_summary(case_count, rw_count, counts, diff_path, missing_path):
-    """Text of the finish message box about the RW comparison: result counts and where the
-    differences and Not in RW files went."""
+def _compare_summary(case_count, rw_count, results, counts, columns, paths):
+    """Text of the finish message box about the RW comparison: result counts, upload rows and the
+    differing records held back from it, report columns missing (so not compared or not in the upload)
+    and where the differences, upload and Not in RW files (paths, in that order) went."""
     if not case_count:
         return 'No board order cases found in the messages, so nothing was compared with RW.'
-    return (f'Compared {case_count} case(s) from the messages with {rw_count} RW case(s): '
-            f'{counts[_MATCH]} match, {counts[_DIFFERS]} differ, {counts[_NOT_IN_RW]} not in RW, '
-            f'{counts[_NOT_IN_MESSAGE]} RW sub-case(s) not in the message.\n\n'
-            f'Saved: {diff_path}\nNot in RW list: {missing_path}')
+    uploads = sum(1 for r in results if r['Upload'])
+    held = sum(1 for r in results if r['Result'] == _DIFFERS and not r['Upload'])
+    text = (f'Compared {case_count} case(s) from the messages with {rw_count} RW case(s): '
+            f'{counts[_MATCH]} match, {counts[_DIFFERS]} differ, {counts[_NOT_IN_RW]} not in RW.\n\n'
+            f'{ark_common.plural(uploads, "RW record")} in the upload file; {held} differing record(s) with '
+            f'sub-cases left out for review by hand. Nothing was uploaded: check the upload file, then '
+            f'load it with the Ark Data Loader as a Cases Update.')
+    skipped = [c for c in _OPTIONAL_RW if c not in columns]
+    if skipped:
+        text += f'\n\nNot compared (no such column in the RW report): {", ".join(skipped)}'
+    left_out = [c for c in _UPLOAD_HEADER if c not in _upload_columns(columns)]
+    if left_out:
+        text += f'\n\nLeft out of the upload (no such column in the RW report): {", ".join(left_out)}'
+    return text + '\n\nDifferences: {}\nUpload file: {}\nNot in RW list: {}'.format(*paths)
 
 
 def main():
     """Read the token, download the messages and write their CSV, then (when they hold any cases)
-    download the RW report, compare, write the differences and Not in RW CSVs, and show the summary.
-    A missing token, a Slack error or a CSV locked by Excel gets its own message box."""
+    download the RW report, compare, write the differences workbook, upload CSV and Not in RW CSV, and
+    show the summary. Nothing is uploaded. A missing token, a Slack error or a file locked by Excel gets
+    its own message box."""
     try:
         token = ark_common.read_slack_token().strip()
     except KeyError:
@@ -655,6 +604,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, _OUTPUT_FILE)
     diff_path = os.path.join(out_dir, _DIFF_FILE)
+    upload_path = os.path.join(out_dir, _UPLOAD_FILE)
     missing_path = os.path.join(out_dir, _MISSING_FILE)
 
     try:
@@ -665,21 +615,22 @@ def main():
     try:
         _write_csv(out_path, _OUTPUT_HEADER, rows)
         cases = _cases_from(rows)
-        rw, has_order = [], False
+        rw, columns = [], set()
         if cases:
             report_path = os.path.join(out_dir, _REPORT_FILE)
             with ark_common.ark_page(_REPORT_URL) as page:
                 ark_common.trigger_download(page, _REPORT_URL).save_as(report_path)
-            rw, has_order = _read_rw(report_path)
-        diff_rows, counts = _compare(cases, rw, has_order)
-        _write_csv(diff_path, _DIFF_HEADER, diff_rows)
-        _write_csv(missing_path, _MISSING_HEADER, _missing_rows(diff_rows))
+            rw, columns = _read_rw(report_path)
+        results, counts = _compare(cases, rw, columns)
+        _write_differences(diff_path, results)
+        _write_csv(upload_path, _upload_columns(columns), [r['Upload'] for r in results if r['Upload']])
+        _write_csv(missing_path, _MISSING_HEADER, _missing_rows(results))
     except PermissionError as e:
         _notify(f'Could not write {e.filename or out_path}.\n\nClose it in Excel and click Docket Updates Slack again.',
                 0x10)
         return
     _notify(_summary(rows, out_path) + '\n\n' +
-            _compare_summary(len(cases), len(rw), counts, diff_path, missing_path))
+            _compare_summary(len(cases), len(rw), results, counts, columns, (diff_path, upload_path, missing_path)))
 
 
 if __name__ == '__main__':

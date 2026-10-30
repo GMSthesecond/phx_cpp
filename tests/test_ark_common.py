@@ -57,6 +57,20 @@ def test_settings_with_percent_signs_read_back_unchanged(tmp_path, monkeypatch):
     assert ark_common.read_folder('Maps', 'default') == 'C:\100% done'
 
 
+@pytest.mark.parametrize('folders, expected', [
+    ('New=D:\\new\nOld=D:\\old\n', 'D:\\new'),  # the new key wins
+    ('Old=D:\\old\n', 'D:\\old'),               # a folder saved under the old name is kept
+    ('', 'default'),                            # neither set: the default
+])
+def test_read_folder_falls_back_to_a_renamed_key(tmp_path, monkeypatch, folders, expected):
+    """read_folder(key, default, old_key=...) reads the key's old name when the new one is unset,
+    so renaming a [Folders] key (e.g. DataMeetingDownload -> NewlyAcquiredInterest) doesn't lose it."""
+    ini = tmp_path / 'settings.ini'
+    ini.write_text('[Folders]\n' + folders, encoding='utf-8')
+    monkeypatch.setattr(ark_common, '_INI_PATH', str(ini))
+    assert ark_common.read_folder('New', 'default', old_key='Old') == expected
+
+
 def test_ark_page_logs_in_and_keeps_the_login_when_a_step_fails(fake_ark):
     """ark_page logs in if Ark asks, and saves the session and closes the browser even when the
     work inside fails, so the next run doesn't redo 2FA."""

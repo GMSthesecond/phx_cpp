@@ -1,7 +1,7 @@
 """Shared helpers for the launcher's Python scripts: settings.ini lookups, message boxes and error
 reporting (notify, run_button, missing_package), and ARK web automation (login, report download,
 Data Loader upload).
-Imported by close_dates, cost_to_extend, download_report, non_hbp_mi, ppiq, str_verification,
+Imported by close_dates, cost_to_extend, nai_download, non_hbp_mi, ppiq, str_verification,
 tpp_lhpp, case_matchup, case_unit_names, docket_updates, map_builder, map_uploader and mirror (not launched directly).
 Also holds the Mirror result kinds (UPLOADED / REVIEW / NOTHING) and small helpers (plural, parse_date).
 Reads %APPDATA%\\PhoenixLandDept\\settings.ini ([Credentials], [EnverusCredentials],
@@ -81,8 +81,11 @@ def read_slack_token():
     return cfg['SlackCredentials']['token']
 
 
-def read_folder(key, default):
-    """Returns the [Folders] path for key from settings.ini, or default if unset."""
+def read_folder(key, default, old_key=None):
+    """Returns the [Folders] path for key from settings.ini; if unset, the path under old_key (the
+    key's name before a rename), else default."""
+    if old_key:
+        default = read_setting('Folders', old_key, default)
     return read_setting('Folders', key, default)
 
 

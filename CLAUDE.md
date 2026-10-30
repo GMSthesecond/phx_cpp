@@ -3,7 +3,7 @@
 Win32 C++ launcher (`phxcpp.exe`) whose buttons run Python automation scripts next to the exe
 (Mirror, top-left, runs several of them in a row via mirror.py),
 plus three C++ dialogs (Settings, Organization, Rename). Each button is labeled with the Desktop
-folder its work goes to (C2E, DMD, STR, ...).
+folder its work goes to (C2E, NAI, STR, ...).
 
 **Read first:**
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): diagrams, button → script map, settings.ini keys, data flow

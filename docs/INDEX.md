@@ -7,7 +7,7 @@ since they go stale). For how the pieces fit together, see [ARCHITECTURE.md](ARC
 **Contents**
 - C++: [main.cpp](#maincpp) · [mirror.cpp](#mirrorcpp--mirrorh) · [settings.cpp](#settingscpp--settingsh) · [organize.cpp](#organizecpp--organizeh) · [rename.cpp](#renamecpp--renameh) · [csv_text.h](#csv_texth)
 - Python (shared): [ark_common.py](#ark_commonpy) · [operator_colors.py](#operator_colorspy) · [mirror.py](#mirrorpy)
-- Python (Ark): [ppiq.py](#ppiqpy) · [tpp_lhpp.py](#tpp_lhpppy) · [download_report.py](#download_reportpy) · [cost_to_extend.py](#cost_to_extendpy) · [str_verification.py](#str_verificationpy) · [close_dates.py](#close_datespy) · [non_hbp_mi.py](#non_hbp_mipy) · [case_matchup.py](#case_matchuppy) · [case_unit_names.py](#case_unit_namespy) · [section_id_blank.py](#section_id_blankpy)
+- Python (Ark): [ppiq.py](#ppiqpy) · [tpp_lhpp.py](#tpp_lhpppy) · [nai_download.py](#nai_downloadpy) · [cost_to_extend.py](#cost_to_extendpy) · [str_verification.py](#str_verificationpy) · [close_dates.py](#close_datespy) · [non_hbp_mi.py](#non_hbp_mipy) · [case_matchup.py](#case_matchuppy) · [case_unit_names.py](#case_unit_namespy) · [section_id_blank.py](#section_id_blankpy)
 - Python (other): [deceased.py](#deceasedpy) · [qq_checker.py](#qq_checkerpy) · [docket_updates.py](#docket_updatespy) · [docket_updates_slack.py](#docket_updates_slackpy) · [doc_inventory.py + county scripts](#doc_inventorypy--doc_inventory_roosevelt--richland--dividepy) · [map_builder.py](#map_builderpy) · [map_uploader.py](#map_uploaderpy)
 - [Tests](#tests): shared helpers, C++ test support, test files
 
@@ -21,7 +21,7 @@ Entry point, main window, button dispatch.
 
 | Name | Kind | Description |
 |---|---|---|
-| `ID_TITLE`, `ID_BUTTON_*` | macro | Control ids for the title and each button; grouped by column. `ID_BUTTON_AOI` (11) runs `str_verification.py --aoi`; `ID_BUTTON_DOCKET_UPDATES` (51) runs `docket_updates.py`; `ID_BUTTON_DOCKET_UPDATES_SLACK` (59) runs `docket_updates_slack.py` (bottom of column 1); `ID_BUTTON_SIB` (36) runs `section_id_blank.py` (also a Mirror step); `ID_BUTTON_QQ` (60, bottom of column 4) runs `qq_checker.py`. |
+| `ID_TITLE`, `ID_BUTTON_*` | macro | Control ids for the title and each button; grouped by column. `ID_BUTTON_AOI` (11) runs `str_verification.py --aoi`; `ID_BUTTON_NAI` (9, was `ID_BUTTON_DOWNLOAD`) runs `nai_download.py`; `ID_BUTTON_DOCKET_UPDATES` (51) runs `docket_updates.py`; `ID_BUTTON_DOCKET_UPDATES_SLACK` (59) runs `docket_updates_slack.py` (bottom of column 1); `ID_BUTTON_SIB` (36) runs `section_id_blank.py` (also a Mirror step); `ID_BUTTON_QQ` (60, bottom of column 4) runs `qq_checker.py`. |
 | `ID_PROGRESS_INDEX`, `ID_LABEL_INDEX_STATUS` | macro | Index progress bar and status label (hidden unless Index is running). |
 | `ID_BUTTON_MIRROR` (52), `ID_PROGRESS_MIRROR` (53), `ID_LABEL_MIRROR_STATUS` (54) | macro | Mirror button (top-left, outside the columns) and its progress bar / status label (hidden unless Mirror is running; same spot as Index's). |
 | `ID_COLUMN_HEADER` (55) | macro | First column-header label id; `ID_COLUMN_HEADER + i` (55-58) is the label over column i + 1. |
@@ -34,7 +34,7 @@ Entry point, main window, button dispatch.
 | `g_hiddenButtonIds` | static global | Working buttons that are switched off: created hidden and disabled; remove an id to bring it back. Holds only `0` (no control's id) while none are hidden, since C++ has no empty arrays. |
 | `IsHiddenButton` | function | True if the id is in `g_hiddenButtonIds`; WM_CREATE creates those buttons hidden and disabled, and WM_COMMAND ignores them (a `BM_CLICK` still reaches a hidden button). |
 | `g_mirrorSteps` | static global | `MirrorStep` table: the buttons Mirror runs, in order, and which upload. Must match `STEPS` in mirror.py (test_wiring checks). |
-| `g_lockedDuringMirror` | static global | PPIQ, AOI, DMD: not Mirror steps, but disabled while Mirror runs because their scripts share the Ark login (session.json). test_wiring checks every such button is a step or listed here. |
+| `g_lockedDuringMirror` | static global | PPIQ, AOI, NAI: not Mirror steps, but disabled while Mirror runs because their scripts share the Ark login (session.json). test_wiring checks every such button is a step or listed here. |
 | `IsMirrorButton` | function | True if the id is in `g_mirrorSteps`; makes the button owner-drawn (green). |
 | `GetExeDir` | static function | Folder of phxcpp.exe (and the scripts), with trailing backslash. |
 | `LaunchScript` | static function | `py "<exeDir><script>" <args>` with no console window, not waited on; error box if Python can't start. Every one-script button calls it. |
@@ -89,10 +89,10 @@ Settings dialog: one row per folder, file and sign-in the scripts and the Organi
 | `s_hwndParent` | static global | Main window, disabled while Settings is open. |
 | `s_hwndSettings` | static global | Open Settings window or NULL; prevents duplicates. |
 | `SettingKind` | enum | `SETTING_FOLDER` / `SETTING_FILE` (picked), `SETTING_TEXT` / `SETTING_SECRET` (typed; secret shows dots). |
-| `Setting` | struct | `section`, `key`, `label`, `kind`, `value` (starts as the default the scripts also use). |
+| `Setting` | struct | `section`, `key`, `label`, `kind`, `value` (starts as the default the scripts also use), `oldKey` (the key's name before a rename, read when `key` is unset; NULL for most rows). |
 | `s_settings` / `kNumSettings` | static global / constant | Every row, top to bottom, and how many. Add a setting here (test_wiring checks it is read and documented). |
 | `GetIniPath` | static function | Builds the settings.ini path; creates the PhoenixLandDept folder. |
-| `LoadSettings` | function | Called by WinMain; reads every row. Never writes. |
+| `LoadSettings` | function | Called by WinMain; reads every row (a row's `oldKey` first, then `key`). Never writes. |
 | `SaveSetting` | static function | Writes one row's key (other keys untouched). |
 | `FindSetting` | static function | Row for `[section] key` (case-insensitive) or NULL. |
 | `GetSetting` / `SetSetting` | function | Current value of a row ("" if unknown) / change it in memory. Organization and Rename read their folders with `GetSetting`. |
@@ -213,7 +213,7 @@ Standard library only at import (Playwright is imported inside `ark_page` / `log
 | `read_credentials` | function | Ark `(username, password)` from `[Credentials]`. |
 | `read_enverus_credentials` | function | Enverus `(identifier, password)` from `[EnverusCredentials]`. |
 | `read_slack_token` | function | Slack user token from `[SlackCredentials] token`; KeyError if missing. |
-| `read_folder` | function | `[Folders]` value for a key, or the default. |
+| `read_folder` | function | `[Folders]` value for a key; if unset, the value under `old_key` (a renamed key's old name), else the default. |
 | `read_setting` | function | Any `[section] key` (e.g. `[Files] IndexWorkbook`), or the default. |
 | `notify` | function | Message box with a title (info icon, or e.g. 0x10 = error). Each script's `_notify` calls it with its own title. |
 | `run_button` | function | Runs a button script's `main()`; on an error writes the traceback to the script's `*_error.log`, shows "<title> failed: <error>" with the log path, re-raises. Every script's `__main__` uses it. |
@@ -316,14 +316,14 @@ Imported only by map_uploader. Persists `<Maps>\operator_colors.json`.
 | `main` | function | Download → process → export → Close Date message box (skipped when `quiet`); returns `(offers, exported)`. |
 | `mirror_step` | function | Mirror: quiet run; Needs review "N price mismatches closing in the next two weeks" (plus "and N with a Close Date Mirror couldn't read"), or Needs review for unreadable dates alone, else No changes. |
 
-### download_report.py
-**Button:** DMD. **Folder:** `[Folders] DataMeetingDownload`. Shows a box when done (errors: `download_report_error.log` + a box).
+### nai_download.py
+**Button:** NAI (Newly Acquired Interest; was DMD / Data Meeting Download, `download_report.py`, before 2026-10-28). **Folder:** `[Folders] NewlyAcquiredInterest`, else the old `DataMeetingDownload` key. Shows a box when done (errors: `nai_download_error.log` + a box).
 
 | Name | Kind | Description |
 |---|---|---|
-| `_DEFAULT_DIR` | constant | `Desktop\DMD`, used when `[Folders] DataMeetingDownload` is unset. |
-| `_REPORT_URLS` | constant | The two Data Meeting reports. |
-| `_out_dir` | private function | The output folder. |
+| `_DEFAULT_DIR` | constant | `Desktop\NAI`, used when neither `[Folders] NewlyAcquiredInterest` nor `DataMeetingDownload` is set. |
+| `_REPORT_URLS` | constant | The two NAI reports. |
+| `_out_dir` | private function | The output folder (`read_folder` with `old_key='DataMeetingDownload'`). |
 | `_trigger_and_save` | private function | Download one report; save with today's date in the name. |
 | `main` | function | `ark_page`, download both, box saying where they went. |
 
@@ -506,10 +506,13 @@ is uploaded. Rules: [ARCHITECTURE.md](ARCHITECTURE.md#docket-updates-comparison)
 **Button:** Docket Updates Slack (bottom of column 1; the Slack version of Docket Updates, which reads the Hearing Dockets workbook since 2026-10-16).
 **Folder:** `[Folders] DocketUpdates` (default `Desktop\Docket Updates`). **Reads:** Slack Web API
 (`conversations.history`, `conversations.replies`) with `[SlackCredentials] token`; then, when the messages hold any
-case, the Ark RW cases report (`_REPORT_URL`, saved as `Slack_RW_Case_Info.csv`). **Writes:** `Slack_Docket_Updates.csv`
-(ID, Date, Time, Message, Reply To, Slack TS, Link; newest first) and `Slack_Docket_Differences.csv` (`_DIFF_HEADER`: each
-case / well group next to its RW record(s), Result = Match / Differs / Not in RW / Not in message) and `Slack_Not_In_RW.csv`
-(`_MISSING_HEADER`: the Slack side of every Not in RW row); all overwritten each run. The `Slack_` prefix keeps them apart
+case, the Ark RW cases report (`_REPORT_URL`, saved as `Slack_RW_Case_Info.csv`). **Writes:** `Parsed_Slack_Messages.csv`
+(ID, Date, Time, Message, Reply To, Slack TS, Link; newest first), `Slack_Docket_Differences.xlsx` (`_DIFF_HEADER`: each
+RW record that differs from its Slack case, differing cells highlighted yellow; matches and Not in RW left out) and
+`Slack_Docket_Upload.csv` (`_UPLOAD_HEADER`: best-guess Cases Update for each differing record of a case without
+sub-cases; **not uploaded**) and `Slack_Not_In_RW.csv` (`_MISSING_HEADER`: the Slack side of every Not in RW case); all overwritten each run. Only the
+`Case …` header lines and `(N Wells)` lines (summed into a well count, compared with RW's Number of Wells) are read:
+sections and state headings in the messages are skipped. The `Slack_` prefix keeps the files apart
 from Docket Updates' files in the same folder. Read-only on Slack and Ark.
 
 | Name | Kind | Description |
@@ -520,20 +523,24 @@ from Docket Updates' files in the same folder. Read-only on Slack and Ark.
 | `_PAGE_SIZE` | constant | Messages per request (200). |
 | `_MAX_RETRIES` | constant | Retries per request after HTTP 429 (5). |
 | `_KEPT_SUBTYPES` | constant | Message kinds exported (plain, thread broadcast, file share, /me); joins etc. skipped. |
-| `_OUTPUT_FILE` / `_OUTPUT_HEADER` | constant | `Slack_Docket_Updates.csv` and its columns. |
+| `_OUTPUT_FILE` / `_OUTPUT_HEADER` | constant | `Parsed_Slack_Messages.csv` and its columns. |
 | `_LINK_RE` | constant | Slack link markup `<url\|label>` / `<url>`. |
 | `_NO_TOKEN_HELP` | constant | Setup steps shown when there is no token. |
-| `_REPORT_URL` / `_REPORT_FILE` | constant | Ark RW cases report (Record Id, Applicant, Case Number, Case Status, Case Type, Sections; Order Status if added) and its saved name `Slack_RW_Case_Info.csv`. |
-| `_DIFF_FILE` / `_DIFF_HEADER` | constant | `Slack_Docket_Differences.csv` and its columns (Result, Differences, both sides of each field, Missing from RW, Extra in RW, Notes, Link). |
-| `_MATCH` / `_DIFFERS` / `_NOT_IN_RW` / `_NOT_IN_MESSAGE` | constant | Result values. |
-| `_MISSING_FILE` / `_MISSING_HEADER` | constant | `Slack_Not_In_RW.csv` and its columns (Case Number, State, Applicant, Case Type, Case Status, Order Status, Sections). |
-| `_STATE_CODES` | constant | US state name (title case, as the state heading reads) → postal code (`North Dakota` → `ND`), for `Slack_Not_In_RW.csv`. |
+| `_REPORT_URL` / `_REPORT_FILE` | constant | Ark RW cases report (uses Record Id, Case Number, Case Status; Order Status, Number of Wells, Case Notes if there) and its saved name `Slack_RW_Case_Info.csv`. |
+| `_RW_WELLS` | constant | `Number of Wells`, the RW report's well count column (found ignoring case and spaces). |
+| `_RW_CASE_NOTES` | constant | `Case Notes`, the RW report's notes column (found ignoring case and spaces); shown as RW Case Notes, never compared. |
+| `_RW_DATE_SIGNED` | constant | `Date Order Signed`, the RW report column the upload fills (only ever moved forward). |
+| `_UPLOAD_FILE` / `_UPLOAD_HEADER` | constant | `Slack_Docket_Upload.csv` and its columns, named as in the RW report: Record Id, Case Status, Order Status, Number of Wells, Date Order Signed, Case Notes (one the report lacks is left out). |
+| `_OPTIONAL_RW` | constant | Report columns compared only when present (Order Status, Number of Wells); missing ones are named in the finish box. |
+| `_DIFF_FILE` / `_DIFF_HEADER` | constant | `Slack_Docket_Differences.xlsx` and its columns (Differences, case numbers, Record Id, Posted, both sides of status / well count, RW Case Notes, Notes, Link; no applicant or type). |
+| `_HIGHLIGHT` / `_YELLOW_FILL` | constant | Difference → the differences columns highlighted for it (Slack side and RW side), and the yellow fill used. |
+| `_MATCH` / `_DIFFERS` / `_NOT_IN_RW` | constant | Result values. |
+| `_MISSING_FILE` / `_MISSING_HEADER` | constant | `Slack_Not_In_RW.csv` and its columns (Case Number, Applicant, Case Type, Case Status, Order Status, Well Count). |
 | `_SPACING_TYPES` | constant | The five Establish … Spacing RW types. |
-| `_TYPE_RULES` | constant | Slack case type pattern → RW Case Types that match (None = not compared). POOLING and SPACING in either order or joined any way (`and`, `&`, `/`) count as Pooling and Spacing. Edit here to change the mapping. |
+| `_TYPE_RULES` | constant | Slack case type pattern → RW Case Types that match (None = no RW type). POOLING and SPACING in either order or joined any way (`and`, `&`, `/`) count as Pooling and Spacing. Not compared with RW since 2026-10-27; `_parse_header` uses it to tell a type from a status. |
 | `_STATUS_RE` / `_EXPECTED_STATUS` | constant | Board results found in a Slack status, and the RW Case Status / Order Status each one should show (GRANTED, PARTIALLY GRANTED, DENIED = Ordered; DISMISSED = Dismissed). |
-| `_HEADER_RE` / `_STATE_RE` / `_BOARD_RE` / `_WELLS_RE` | constant | Line patterns: case header, state heading (`NORTH DAKOTA:`), message heading, `(4 Wells)` group line. |
-| `_SECTION_RE` / `_RW_SECTION_RE` / `_PART_RE` | constant | Slack section line (`11-156N-91W-W2`), RW section (`NW-11-156N-91W`), one aliquot step (`NE`, `W2`). |
-| `_QUARTERS` | constant | Quarter names and their corner in the 4×4 quarter-quarter grid. |
+| `_HEADER_RE` | constant | Case header line pattern (`Case <number> (<applicant>): <type>: <status>`). |
+| `_WELLS_RE` | constant | Well group line (`(4 Wells)`, `(5 Wells)-(CHEETAH UNIT)`, `2 wells`); captures the count. |
 | `SlackError` | class | Slack answered `ok: false`. |
 | `_notify` | private function | Message box. |
 | `_call` | private function | One API GET with the token; waits Retry-After and retries on 429; raises SlackError on `ok: false`. |
@@ -546,26 +553,25 @@ from Docket Updates' files in the same folder. Read-only on Slack and Ark.
 | `_permalink` | private function | Message link; replies open in their thread. |
 | `_rows` | private function | CSV rows newest first; Reply To = parent's ID. |
 | `_write_csv` | private function | Header + rows, UTF-8 with BOM (Excel-friendly). |
-| `_part_cells` | private function | Quarter-quarter cells an aliquot covers (ALL, W2, NE, S2SE, E2W2…); None if unreadable. |
-| `_section_key` | private function | Section name as RW writes it (`11-156N-91W`). |
-| `_slack_section` | private function | Cells + remarks of a Slack section line; a missing range direction is W outside Montana. |
-| `_rw_cells` | private function | Cells of an RW Sections value; unreadable entries kept as their own cell. |
-| `_section_order` / `_describe` | private function | Sort by township, range, section / RW-style text for cells (whole section, quarter, quarter-quarter). |
 | `_status` | private function | GRANTED / PARTIALLY GRANTED / DISMISSED / DENIED in a status; ignores `~struck~` text, reads GARNTED. |
-| `_rw_types` | private function | RW types matching a Slack type via `_TYPE_RULES`. |
+| `_rw_types` | private function | RW types matching a Slack type via `_TYPE_RULES` (None when none); used by `_parse_header`. |
 | `_parse_header` | private function | Number(s), applicant (nested parentheses OK), type, status, status as written (`status_text`) and notes of a `Case …` line. |
-| `_group` / `_parse_message` | private function | New well group / cases of one message with state, well groups and notes. A header with no status takes one only from the first non-blank line below it. |
-| `_has_info` | private function | A post of a case has a status or sections (a bare mention has neither). |
-| `_fill_blanks` | private function | Copies the status, type, applicant and sections a post leaves blank from an older post of the same case; an unrecognized status as written isn't blank. Returns the fields copied. |
-| `_cases_from` | private function | Cases of all messages. Posts sharing any case number are one case; the newest post with a status or sections wins (a bare mention never does) and its blanks are filled from the newest older post that has them (noted as "Sections from the … post"); the other posts are noted, and all their numbers are looked up. |
-| `_read_rw` | private function | RW report rows + cells; blank-Record-Id rows add Sections to the case above; whether Order Status exists. |
-| `_candidates` | private function | RW records for a case number and its sub-cases. |
-| `_pair` | private function | Well groups ↔ RW records: same sections, then position (`<n>-k`), then a lone group takes the rest. |
-| `_differences` | private function | Status / Order Status / Type / Sections that disagree. |
-| `_rw_fields` / `_compare` | private function | RW columns of a row / all comparison rows + Result counts; unpaired plain sub-cases become Not in message (Roman-numeral field-rules ones are skipped). |
-| `_missing_rows` | private function | `Slack_Not_In_RW.csv` rows from the comparison rows: Not in RW only, state as postal code (unknown kept as is), Slack result as RW Case Status / Order Status via `_EXPECTED_STATUS` (blank when none), sections as written in Slack. |
-| `_summary` / `_compare_summary` | private function | Finish message parts: Slack count, date range, path / comparison counts, differences and Not in RW paths. |
-| `main` | function | Token → fetch → write messages → (if any case) download RW report → compare → write differences and Not in RW → summary; own boxes for no token, Slack errors and a CSV locked by Excel. Other errors go to `docket_updates_slack_error.log` + a box (titled Docket Updates Slack). |
+| `_parse_message` | private function | Cases of one message: the fields of each `Case …` header line plus `wells`, the sum of the `(N Wells)` lines below it (None if none). Other lines (states, sections, remarks) are skipped, except that a header with no status takes one from the first non-blank line below it. |
+| `_has_info` | private function | A post of a case says more than its number: a status (also an unrecognized one), type, applicant or well count (a bare mention has none). |
+| `_fill_blanks` | private function | Copies the status, type, applicant and well count a post leaves blank from an older post of the same case; an unrecognized status as written isn't blank. Returns the fields copied. |
+| `_cases_from` | private function | Cases of all messages. Posts sharing any case number are one case; the newest post with info (`_has_info`) wins and its blanks are filled from the newest older post that has them (noted as "Status from the … post"); the other posts are noted, and all their numbers are looked up. |
+| `_read_rw` | private function | RW report rows with a Record Id (blank-Record-Id continuation rows skipped), column names trimmed and the `_UPLOAD_HEADER` columns found ignoring case; the set of the report's column names. |
+| `_well_number` | private function | An RW Number of Wells value as an int (`4`, `4.0`), None when blank or not a whole number. |
+| `_rw_date` | private function | An RW date (`10/05/2026`, `2026-10-05`, a time after it is ignored) as a date, None when blank or unreadable. |
+| `_candidates` | private function | RW records a case is compared with: each number and its plain `<n>-k` sub-cases, sorted by number; Roman-numeral field-rules sub-cases only when RW has none of those. |
+| `_differences` | private function | Status / Order Status / Well Count that disagree (Order Status and Well Count only when the report has the column; Well Count against the case's RW total). Type and applicant aren't compared. |
+| `_upload_columns` | private function | The `_UPLOAD_HEADER` columns written: Record Id plus each one the RW report has. |
+| `_upload_row` | private function | One upload row + notes: Slack's Case / Order Status (DISMISSED writes a blank Order Status on purpose), well count, and the post's date as Date Order Signed when Slack has a result (only moved forward; an unreadable RW date is kept and noted); RW's own value everywhere else; the post's link + space in front of RW's Case Notes unless already there. |
+| `_rw_fields` / `_compare` | private function | RW columns of a row (well count as a number when readable, Case Notes as given) / all comparison rows as dicts with Result, Upload (the record's upload row or None) and Slack Applicant / Type for `_missing_rows`, + Result counts: one row per candidate record, or Not in RW. Slack's well count is compared with the total of the case's records; a note gives the total when several differ. A differing record of a case with sub-cases or several records gets no upload row and a "review by hand" note. |
+| `_write_differences` | private function | Differs rows to `Slack_Docket_Differences.xlsx`: bold frozen filterable header, `_HIGHLIGHT` cells yellow, clickable Link, column widths fitted. |
+| `_missing_rows` | private function | `Slack_Not_In_RW.csv` rows from the comparison rows: Not in RW only, Slack result as RW Case Status / Order Status via `_EXPECTED_STATUS` (blank when none), Slack well count. |
+| `_summary` / `_compare_summary` | private function | Finish message parts: Slack count, date range, path / comparison counts, upload rows and held-back records, report columns not compared or left out of the upload, differences / upload / Not in RW paths. |
+| `main` | function | Token → fetch → write messages → (if any case) download RW report → compare → write differences workbook, upload CSV (not uploaded) and Not in RW → summary; own boxes for no token, Slack errors and a file locked by Excel. Other errors go to `docket_updates_slack_error.log` + a box (titled Docket Updates Slack). |
 
 ### deceased.py
 **Button:** Bring out your dead. **Folder:** `[Folders] Deceased` (default `Desktop\Bring out your dead`).
@@ -779,6 +785,6 @@ Loaded first by pytest. At import it blocks the browser, the network and message
 | `test_app_buttons.py` | Builds the app with stand-in scripts and clicks every button (a `HIDDEN` one must be hidden, disabled, and launch nothing); checks each button sits in its `COLUMNS` column and order, under its `COLUMN_HEADERS` label. The mirror.py stand-in honors `--stop-file`; flag files next to it make it hold its first step 30 s (`mirror_long_hold`), stay alive after `@FINISHED` like the report box (`mirror_report_hold`), or exit early (`mirror_crash`). |
 | `test_cpp.py` | Builds and runs the C++ tests; Python reads the INI that settings.cpp writes. |
 | `test_error_reporting.py` | Every button script shows an error box on failure (title, error and log path); the map scripts name a missing package; `ark_common.run_button`. |
-| `test_ark_common.py` | `ark_common.upload` (the shared Data Loader wizard): picks the given dataset (whole name, any capitalization), confirms with the operation, stops at the "X of Y" row counter; `trigger_download` waits while Ark's notifications show an export in progress and fails after the time limit instead of taking an older file; `check_columns` accepts the expected header and rejects another report's; settings with `%` read as typed; `ark_page` logs in and keeps the session after an error. |
+| `test_ark_common.py` | `ark_common.upload` (the shared Data Loader wizard): picks the given dataset (whole name, any capitalization), confirms with the operation, stops at the "X of Y" row counter; `trigger_download` waits while Ark's notifications show an export in progress and fails after the time limit instead of taking an older file; `check_columns` accepts the expected header and rejects another report's; settings with `%` read as typed; `read_folder` falls back to a renamed key's old name; `ark_page` logs in and keeps the session after an error. |
 | `test_mirror.py` | Mirror's runner (fake steps): progress tags, failures carried on, report groups, archive file, message box; the child-process runner and its time limit (harmless `python -c` children); Stop via the stop file (Not run steps, the running child's tree killed); Index step; one full run of the real steps against the fake Ark. An autouse fixture resets `mirror._stop_file` per test. |
-| `test_ppiq.py`, `test_index.py`, `test_str_verification.py`, `test_tpp_lhpp.py`, `test_download_report.py`, `test_cost_to_extend.py`, `test_case_matchup.py`, `test_case_unit_names.py`, `test_section_id_blank.py`, `test_docket_updates.py`, `test_docket_updates_slack.py`, `test_deceased.py`, `test_qq_checker.py`, `test_close_dates.py`, `test_case_update.py`, `test_map.py` | One button's script each (see the table in [TESTING.md](TESTING.md#button--tests)). |
+| `test_ppiq.py`, `test_index.py`, `test_str_verification.py`, `test_tpp_lhpp.py`, `test_nai_download.py`, `test_cost_to_extend.py`, `test_case_matchup.py`, `test_case_unit_names.py`, `test_section_id_blank.py`, `test_docket_updates.py`, `test_docket_updates_slack.py`, `test_deceased.py`, `test_qq_checker.py`, `test_close_dates.py`, `test_case_update.py`, `test_map.py` | One button's script each (see the table in [TESTING.md](TESTING.md#button--tests)). |

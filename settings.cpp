@@ -26,13 +26,14 @@ struct Setting {
     const TCHAR* label;     // shown at the left of the row
     SettingKind kind;       // how the value is edited
     TCHAR value[MAX_PATH];  // current value; starts as the default the scripts also use
+    const TCHAR* oldKey;    // the key's name before a rename, read when key is unset (NULL if never renamed)
 };
 
 // Every row of the settings window, top to bottom. Defaults match the scripts' fallbacks.
 // To add a setting: add a row here, read it in the script (ark_common.read_folder for [Folders]),
 // and add it to the settings.ini table in docs/ARCHITECTURE.md (tests/test_wiring.py checks).
 static Setting s_settings[] = {
-    { TEXT("Folders"), TEXT("DataMeetingDownload"), TEXT("Data Meeting Download:"), SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\DMD") },
+    { TEXT("Folders"), TEXT("NewlyAcquiredInterest"), TEXT("Newly Acquired Interest:"), SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\NAI"), TEXT("DataMeetingDownload") },
     { TEXT("Folders"), TEXT("STRVerification"), TEXT("STR Verification:"),   SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\STR") },
     { TEXT("Folders"), TEXT("AOI"),             TEXT("AOI:"),                SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\AOI") },
     { TEXT("Folders"), TEXT("CloseDates"),      TEXT("Close Date:"),         SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Close Date") },
@@ -72,13 +73,15 @@ static void GetIniPath(TCHAR* out) {
     wsprintf(out, TEXT("%s\\settings.ini"), dir);
 }
 
-// Loads every s_settings row from settings.ini. Called once from WinMain; does not write the INI.
+// Loads every s_settings row from settings.ini (a renamed row reads its oldKey first, so a value
+// saved under the old name is kept until the new key is saved). Called once from WinMain; does not write the INI.
 void LoadSettings() {
     TCHAR iniPath[MAX_PATH];
     GetIniPath(iniPath);
     // GetPrivateProfileString writes the default into the buffer if the key is absent,
     // so each row keeps its compiled-in value on first launch.
     for (Setting& s : s_settings) {
+        if (s.oldKey) GetPrivateProfileString(s.section, s.oldKey, s.value, s.value, MAX_PATH, iniPath);
         GetPrivateProfileString(s.section, s.key, s.value, s.value, MAX_PATH, iniPath);
     }
 }

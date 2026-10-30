@@ -47,7 +47,7 @@ BUTTONS = [
     # Column 2
     Button('PPIQ', SCRIPT, ['ppiq.py'], ['test_ppiq.py']),
     Button('AOI', SCRIPT, ['str_verification.py', '--aoi'], ['test_str_verification.py']),
-    Button('DMD', SCRIPT, ['download_report.py'], ['test_download_report.py']),
+    Button('NAI', SCRIPT, ['nai_download.py'], ['test_nai_download.py']),
     Button('Organization', INLINE, 'RunOrganize', ['test_cpp.py']),
     # Column 3
     Button('Unit Connect to Cases', SCRIPT, ['case_matchup.py'], ['test_case_matchup.py']),
@@ -71,7 +71,7 @@ BUTTONS = [
 COLUMNS = [
     ['Close Date', 'Case Update', 'Index', 'Cases Unit Names', 'STR', 'TPP-LHPP',
      'C2E', 'Docket Updates', 'SIB', 'Docket Updates Slack'],
-    ['PPIQ', 'AOI', 'DMD', 'Organization'],
+    ['PPIQ', 'AOI', 'NAI', 'Organization'],
     ['Unit Connect to Cases', 'Bring out your dead', 'Rename', 'Maps'],
     ['ELMI', 'HBPNW', 'LE', 'LHP', 'NHBPW', 'UNLE', 'SL', 'HBP Wells', 'QQ'],
 ]

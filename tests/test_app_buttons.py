@@ -68,7 +68,7 @@ _MIRROR_REPORT_OPEN = 'mirror_report_open'  # written by the stand-in while it "
 _MIRROR_SAW_STOP = 'mirror_saw_stop'  # written by the stand-in when it finds its stop file
 _INDEX_COUNTS = {'doc_inventory_roosevelt.py': 3, 'doc_inventory_richland.py': 4, 'doc_inventory_divide.py': 5}
 _MIRROR_STEPS = [step.name for step in mirror.STEPS]  # buttons Mirror runs (drawn green)
-_LOCKED_DURING_MIRROR = ['PPIQ', 'AOI', 'DMD']  # also share the Ark login, so locked too
+_LOCKED_DURING_MIRROR = ['PPIQ', 'AOI', 'NAI']  # also share the Ark login, so locked too
 
 # Stand-in for every launched script: records its name and arguments to calls.jsonl next to it.
 # The Index stand-ins also print progress tags the way the real scripts do (tag mid-line after \r),

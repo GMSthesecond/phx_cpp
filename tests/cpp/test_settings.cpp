@@ -47,6 +47,20 @@ TEST(settings_missing_ini_keeps_defaults) {
     CHECK(!FileExists(IniPath()));  // loading never writes
 }
 
+TEST(settings_renamed_key_falls_back_to_its_old_name) {
+    // A settings.ini from before the DMD -> NAI rename has only the old key: the row shows it
+    WritePrivateProfileString(L"Folders", L"DataMeetingDownload", L"D:\\Old DMD", IniPath().c_str());
+    SetSetting(L"Folders", L"NewlyAcquiredInterest", L"C:\\Default\\NAI");
+    LoadSettings();
+    CHECK_EQ(std::wstring(GetSetting(L"Folders", L"NewlyAcquiredInterest")), std::wstring(L"D:\\Old DMD"));
+    // Once the new key is saved it wins over the old one
+    WritePrivateProfileString(L"Folders", L"NewlyAcquiredInterest", L"D:\\NAI", IniPath().c_str());
+    LoadSettings();
+    CHECK_EQ(std::wstring(GetSetting(L"Folders", L"NewlyAcquiredInterest")), std::wstring(L"D:\\NAI"));
+    // The old name is not a row of its own
+    CHECK(!SetSetting(L"Folders", L"DataMeetingDownload", L"x"));
+}
+
 TEST(settings_saving_one_row_leaves_other_keys_alone) {
     WritePrivateProfileString(L"Folders", L"SomethingElse", L"E:\\Other", IniPath().c_str());
     WritePrivateProfileString(L"Credentials", L"username", L"someone", IniPath().c_str());
