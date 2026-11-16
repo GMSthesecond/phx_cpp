@@ -2,7 +2,8 @@
 
 Win32 C++ launcher (`phxcpp.exe`) whose buttons run Python automation scripts next to the exe
 (Mirror, top-left, runs several of them in a row via mirror.py),
-plus three C++ dialogs (Settings, Organization, Rename). Each button is labeled with the Desktop
+plus four C++ dialogs (Settings, Organization, Rename, and Merge's link window, which then runs merge.py).
+Each button is labeled with the Desktop
 folder its work goes to (C2E, NAI, STR, ...).
 
 **Read first:**
@@ -55,7 +56,8 @@ called done. See docs/TESTING.md for how-tos and which existing test file to cop
   `vcvars64.bat` (VS at `C:\Program Files\Microsoft Visual Studio\18\Community`), then
   `cl /nologo /EHsc /D UNICODE /D _UNICODE *.cpp <tmp>\app.res user32.lib gdi32.lib ole32.lib shell32.lib comctl32.lib /Fo<tmp>\ /Fe:<tmp>\phxcpp.exe /link /subsystem:windows`
 - Python: `py -m py_compile <file>`. Don't run the scripts to test them: they log into Ark/Enverus
-  and several upload to live data (C2E, Close Date, Case Update, Maps).
+  and several upload to live data (C2E, Close Date, Case Update, Maps; Merge renames accounts, edits
+  their notes and moves their contacts / offers / title requests / calls after its Yes/No box).
 - **Run `py -m pytest` after every change** (about 30 s, offline). It builds the C++ into temp
   folders and clicks every button of a temp build that has stand-in scripts, so it's safe to run.
   `-m "not cpp and not app"` runs only the Python tests (about 2 s). New test code follows the

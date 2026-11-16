@@ -26,14 +26,13 @@ struct Setting {
     const TCHAR* label;     // shown at the left of the row
     SettingKind kind;       // how the value is edited
     TCHAR value[MAX_PATH];  // current value; starts as the default the scripts also use
-    const TCHAR* oldKey;    // the key's name before a rename, read when key is unset (NULL if never renamed)
 };
 
 // Every row of the settings window, top to bottom. Defaults match the scripts' fallbacks.
 // To add a setting: add a row here, read it in the script (ark_common.read_folder for [Folders]),
 // and add it to the settings.ini table in docs/ARCHITECTURE.md (tests/test_wiring.py checks).
 static Setting s_settings[] = {
-    { TEXT("Folders"), TEXT("NewlyAcquiredInterest"), TEXT("Newly Acquired Interest:"), SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\NAI"), TEXT("DataMeetingDownload") },
+    { TEXT("Folders"), TEXT("NewlyAcquiredInterest"), TEXT("Newly Acquired Interest:"), SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\NAI") },
     { TEXT("Folders"), TEXT("STRVerification"), TEXT("STR Verification:"),   SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\STR") },
     { TEXT("Folders"), TEXT("AOI"),             TEXT("AOI:"),                SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\AOI") },
     { TEXT("Folders"), TEXT("CloseDates"),      TEXT("Close Date:"),         SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Close Date") },
@@ -53,6 +52,7 @@ static Setting s_settings[] = {
     { TEXT("Files"),   TEXT("IndexWorkbook"),   TEXT("Index workbook:"),     SETTING_FILE,   TEXT("C:\\Cloud\\Box\\Ethan Mesecher\\Index of Scanned Docs.xlsx") },
     { TEXT("Folders"), TEXT("Organize"),        TEXT("Organize:"),           SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Organization") },
     { TEXT("Folders"), TEXT("Rename"),          TEXT("Rename:"),             SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Rename") },
+    { TEXT("Folders"), TEXT("Merges"),          TEXT("Merges:"),             SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Merges") },
     { TEXT("Folders"), TEXT("MirrorArchive"),   TEXT("Mirror archive:"),     SETTING_FOLDER, TEXT("C:\\Users\\Ethan Mesecher\\Desktop\\Dailies\\Archive") },
     { TEXT("Credentials"),        TEXT("username"),   TEXT("Ark email:"),        SETTING_TEXT,   TEXT("") },
     { TEXT("Credentials"),        TEXT("password"),   TEXT("Ark password:"),     SETTING_SECRET, TEXT("") },
@@ -73,15 +73,14 @@ static void GetIniPath(TCHAR* out) {
     wsprintf(out, TEXT("%s\\settings.ini"), dir);
 }
 
-// Loads every s_settings row from settings.ini (a renamed row reads its oldKey first, so a value
-// saved under the old name is kept until the new key is saved). Called once from WinMain; does not write the INI.
+// Loads every s_settings row from settings.ini (only each row's own key; e.g. the pre-rename
+// DataMeetingDownload key is ignored). Called once from WinMain; does not write the INI.
 void LoadSettings() {
     TCHAR iniPath[MAX_PATH];
     GetIniPath(iniPath);
     // GetPrivateProfileString writes the default into the buffer if the key is absent,
     // so each row keeps its compiled-in value on first launch.
     for (Setting& s : s_settings) {
-        if (s.oldKey) GetPrivateProfileString(s.section, s.oldKey, s.value, s.value, MAX_PATH, iniPath);
         GetPrivateProfileString(s.section, s.key, s.value, s.value, MAX_PATH, iniPath);
     }
 }
@@ -153,7 +152,9 @@ static const int kRowTop = 12, kRowPitch = 30, kLabelW = 160, kValueX = 175, kVa
 // Window proc for the settings popup. WM_CREATE builds one row per s_settings entry: a label,
 // the value (a path label for folders/files, a text box for typed values) and a Change / Save button.
 // Change runs PickPath; Save takes the text box. Either updates the row and calls SaveSetting.
-// WM_DESTROY re-enables the parent and clears s_hwndSettings.
+// WM_CLOSE re-enables the parent BEFORE destroying the window (Windows gives the focus back to an
+// owner only if it's enabled as its popup goes; otherwise another app's window comes to the front).
+// WM_DESTROY re-enables it too (in case the window goes another way) and clears s_hwndSettings.
 static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
@@ -206,6 +207,10 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             }
             return 0;
         }
+        case WM_CLOSE:
+            EnableWindow(s_hwndParent, TRUE);
+            DestroyWindow(hwnd);
+            return 0;
         case WM_DESTROY:
             EnableWindow(s_hwndParent, TRUE);
             SetForegroundWindow(s_hwndParent);

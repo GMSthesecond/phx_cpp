@@ -34,14 +34,15 @@ def test_logs_in_when_signed_out(fake_ark, folders):
     assert len(fake_ark.downloads) == 2
 
 
-def test_folder_set_before_the_rename_is_still_used(tmp_path, monkeypatch):
-    """A settings.ini from the DMD days (only [Folders] DataMeetingDownload) keeps its folder;
-    once NewlyAcquiredInterest is set it wins; with neither, the default is Desktop\\NAI."""
+def test_old_dmd_folder_key_is_ignored(tmp_path, monkeypatch):
+    """A settings.ini from the DMD days still holding [Folders] DataMeetingDownload=...\\DMD does not
+    send NAI reports there (bug fixed 2026-11-16): the default Desktop\\NAI is used until
+    NewlyAcquiredInterest is set, and then that wins."""
     ini = tmp_path / 'settings.ini'
     monkeypatch.setattr(ark_common, '_INI_PATH', str(ini))
 
-    ini.write_text('[Folders]\nDataMeetingDownload=D:\\old DMD\n', encoding='utf-8')
-    assert nai_download._out_dir() == 'D:\\old DMD'
+    ini.write_text('[Folders]\nDataMeetingDownload=C:\\Users\\me\\Desktop\\DMD\n', encoding='utf-8')
+    assert nai_download._out_dir() == nai_download._DEFAULT_DIR
 
     ini.write_text('[Folders]\nDataMeetingDownload=D:\\old DMD\nNewlyAcquiredInterest=D:\\NAI\n', encoding='utf-8')
     assert nai_download._out_dir() == 'D:\\NAI'

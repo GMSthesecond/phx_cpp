@@ -168,8 +168,6 @@ def test_buttons_sharing_the_ark_login_are_locked_during_mirror():
             assert b.label in covered, f'{b.label} uses the Ark login: add it to g_lockedDuringMirror in main.cpp'
 
 
-@pytest.mark.xfail(strict=True, reason='KNOWN_ISSUES: Docket Updates and Docket Updates Slack sign in through '
-                                       'ark_page but are not locked during Mirror')
 def test_buttons_using_ark_page_are_locked_during_mirror():
     """Like the test above, but also counts scripts that use the Ark login through ark_common.ark_page
     (which loads and saves session.json) without naming _SESSION themselves."""

@@ -29,6 +29,7 @@ _SCRIPTS = {
     'str_verification.py': True,
     'deceased.py': True,       # fails because its input CSVs are missing in the sandbox folder
     'qq_checker.py': True,     # no QQ_Checker.csv in the sandbox QQ folder
+    'merge.py': True,          # pytest's own arguments aren't two account links
     'map_builder.py': True,    # no Units.csv in the sandbox Maps folder
     'map_uploader.py': True,   # no zips in the sandbox Maps folder
     'doc_inventory_roosevelt.py': True,  # the sandbox index workbook doesn't exist

@@ -425,3 +425,21 @@ TEST(organize_refunds_offset_their_category_and_card_payments_are_skipped) {
         for (size_t i = 1; i < r.size(); i++) CHECK_EQ(r[i], std::wstring(L""));
     }
 }
+
+// The transaction the classify dialog test shows (g_cp while it's open).
+static ClassifyParams s_shownTx = { L"01/02/2026", L"COFFEE SHOP", L"-4.50", -1, false, L"COFFEE SHOP" };
+
+TEST(classify_window_reenables_the_launcher_before_it_closes) {
+    g_cp = &s_shownTx;
+    RegisterOrganizeClass(GetModuleHandle(NULL));  // unregistered again by OwnerEnabledWhenPopupCloses
+    CHECK(OwnerEnabledWhenPopupCloses(CLASSIFY_CLS, [](HWND popup, HWND) { SendMessage(popup, WM_COMMAND, ID_CL_SKIP, 0); },
+                                      &s_shownTx));
+    RegisterOrganizeClass(GetModuleHandle(NULL));
+    CHECK(OwnerEnabledWhenPopupCloses(CLASSIFY_CLS, [](HWND popup, HWND) { SendMessage(popup, WM_CLOSE, 0, 0); },
+                                      &s_shownTx));
+    RegisterOrganizeClass(GetModuleHandle(NULL));
+    CHECK(OwnerEnabledWhenPopupCloses(CLASSIFY_CLS, [](HWND popup, HWND) { SendMessage(popup, WM_COMMAND, ID_CL_OK, 0); },
+                                      &s_shownTx));
+    CHECK_EQ(s_shownTx.result, 0);  // Confirm with the first category picked
+    g_cp = nullptr;
+}

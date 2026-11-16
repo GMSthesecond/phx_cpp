@@ -5,10 +5,12 @@ Check_STR_(EM)_(Full).csv in the running button's folder, then writes one report
   STR Verification ([Folders] STRVerification) -> Error_Report.csv, rows whose Section Name
                                                   doesn't match section-township-range
   AOI ([Folders] AOI)                          -> "AOI MM.DD.YYYY.csv" (run date), rows whose
-                                                  Area of Interest can't be verified
+                                                  section isn't among the sections their Area of
+                                                  Interest name lists, or whose name can't be read
 Shows a box with the error count when run from a button (none from Mirror), or an error box with
 the log str_verification_error.log in the button's folder (ark_common.run_button).
-Also Mirror's "STR" step (mirror_step, STR check only). Depends on playwright.
+Also Mirror's "STR" step (mirror_step, STR check only) and its last step, "AOI" (aoi_mirror_step,
+AOI check only). Depends on playwright.
 """
 import os
 import sys
@@ -29,7 +31,13 @@ _STR_ERROR_PATH = os.path.join(_OUT_DIR, 'Error_Report.csv')  # STR Verification
 
 _AOI_DIR    = ark_common.read_folder('AOI', r'C:\Users\Ethan Mesecher\Desktop\AOI')  # AOI working folder ([Folders] AOI)
 _AOI_INPUT_PATH = os.path.join(_AOI_DIR, _INPUT_NAME)  # AOI's downloaded report
-_AOI_ERROR_PATH = os.path.join(_AOI_DIR, f'AOI {datetime.date.today():%m.%d.%Y}.csv')  # AOI output: unverifiable Areas of Interest, named for the run date
+_AOI_ERROR_PATH = os.path.join(_AOI_DIR, f'AOI {datetime.date.today():%m.%d.%Y}.csv')  # AOI output: rows to check by hand, named for the run date
+
+_AOI_SKIP = ('', 'Non-Ops')  # Area of Interest values the AOI check doesn't look at
+_SECTIONS_TR = (r'(\d+(?:\s*,\s*\d+)*)\s*-\s*T?(\d+)\s*([NS])\s*-\s*R?(\d+)\s*([EW])')  # "1, 12, 13-150N-100W": sections, township, range
+_AOI_BODY = re.compile(rf'\s*{_SECTIONS_TR}(?:\s*,\s*{_SECTIONS_TR})*\s*', re.I)  # an AOI name's part before "_": one or more section groups
+_SECTIONS_TR_RE = re.compile(_SECTIONS_TR, re.I)  # one section group, to pull each out of _AOI_BODY
+_AOI_FORMAT = '1, 12, 13-150N-100W _ Name'  # example AOI name shown in the "can't be read" issue
 
 
 # ---------------------------------------------------------------------------
@@ -56,10 +64,10 @@ def _process(aoi):
     """Check each row of the downloaded report and write failures to one report.
     aoi=False (STR Verification): reads _INPUT_PATH; Section Name must equal "SS-TTTN-RRRW"
     (zero-padded section; falls back to Township Name when township/range are blank) -> _STR_ERROR_PATH.
-    aoi=True (AOI): reads _AOI_INPUT_PATH; Area of Interest (unless blank or Non-Ops) must contain
-    the section plus township-range, or the Section Name, each as a whole number (_has_whole)
-    -> _AOI_ERROR_PATH.
-    Rows with a blank Section Name are skipped by both checks. Returns the number of failures."""
+    aoi=True (AOI): reads _AOI_INPUT_PATH; unless blank or Non-Ops, the Area of Interest name is
+    parsed into the sections it covers (_aoi_sections) and the row's section (_row_section) must
+    be one of them; otherwise _aoi_issue says why -> _AOI_ERROR_PATH.
+    The STR check skips rows with a blank Section Name. Returns the number of failures."""
     errors = []  # (id, section_name, combined_str, area_of_interest, issue)
 
     with open(_AOI_INPUT_PATH if aoi else _INPUT_PATH, "r", encoding="utf-8-sig") as file:
@@ -72,10 +80,10 @@ def _process(aoi):
             township         = row[2]
             range_           = row[3]
             section_name     = row[4]
-            if section_name == "":
-                continue
             township_name    = row[5]
             area_of_interest = row[7]
+            if section_name == "" and not aoi:
+                continue
 
             section0      = section
             section_name0 = section_name
@@ -92,13 +100,11 @@ def _process(aoi):
             if not aoi:
                 if section_name != combined_str:
                     errors.append((id, section_name, combined_str, "", "Combined STR doesn't match Section Name"))
-            elif area_of_interest not in ("Non-Ops", ""):
-                if _has_whole(area_of_interest, section0 + ",") and _has_whole(area_of_interest, township + "-" + range_):
-                    pass
-                elif _has_whole(area_of_interest, section_name0):
-                    pass
-                else:
-                    errors.append((id, section_name0, combined_str, area_of_interest, "area of interest cannot be verified automatically"))
+            elif area_of_interest.strip() not in _AOI_SKIP:
+                issue = _aoi_issue(area_of_interest,
+                                   _row_section(section_name0, section0, township, range_, township_name))
+                if issue:
+                    errors.append((id, section_name0, combined_str, area_of_interest, issue))
 
     out_path = _AOI_ERROR_PATH if aoi else _STR_ERROR_PATH
     with open(out_path, mode='w', newline='', encoding='utf-8') as file:
@@ -114,11 +120,44 @@ def _process(aoi):
     return len(errors)
 
 
-def _has_whole(text, token):
-    """Whether text contains token as a whole number: no digit right before or after it, so
-    "4," isn't found in "14," nor "53N-97W" in "153N-97W". Leading zeros may differ ("04," finds "4,")."""
-    core = token.lstrip('0') or token
-    return re.search(rf'(?<![0-9])0*{re.escape(core)}(?![0-9])', text) is not None
+def _aoi_sections(area_of_interest):
+    """The sections an Area of Interest name covers, as a set of (section, township, range) with
+    township/range like (150, 'N') / (100, 'W'); None if the name doesn't follow
+    "1, 12-150N-100W[, 25, 36-151N-100W ...] _ Name". Leading zeros and spacing don't matter."""
+    body = area_of_interest.split('_', 1)[0]
+    if not _AOI_BODY.fullmatch(body):
+        return None
+    covered = set()
+    for sections, t, ns, r, ew in _SECTIONS_TR_RE.findall(body):
+        tr = ((int(t), ns.upper()), (int(r), ew.upper()))
+        covered.update((int(s),) + tr for s in sections.split(','))
+    return covered
+
+
+def _row_section(section_name, section, township, range_, township_name):
+    """A report row's (section, township, range) like _aoi_sections gives: from the Section Name,
+    else from Section + Township + Range, else Section + Township Name; None if none can be read."""
+    for text in (section_name, f'{section}-{township}-{range_}', f'{section}-{township_name}'):
+        found = _aoi_sections(text)
+        if found and len(found) == 1:
+            return found.pop()
+    return None
+
+
+def _aoi_issue(area_of_interest, row_section):
+    """Why a row fails the AOI check ('' if its section is in the Area of Interest): the AOI name
+    can't be read, the row's section can't be read, or the section / township-range isn't listed."""
+    covered = _aoi_sections(area_of_interest)
+    if covered is None:
+        return f"Area of Interest can't be read (expected like '{_AOI_FORMAT}')"
+    if row_section is None:
+        return "Section can't be read from Section Name or Section/Township/Range"
+    if row_section in covered:
+        return ''
+    sec, (t, ns), (r, ew) = row_section
+    if any(c[1:] == row_section[1:] for c in covered):
+        return f"Section {sec} isn't in this Area of Interest's {t}{ns}-{r}{ew} sections"
+    return f"Township-range {t}{ns}-{r}{ew} isn't in this Area of Interest"
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +183,16 @@ def mirror_step():
         return ark_common.REVIEW, (f'{ark_common.plural(errors, "Section Name mismatch", "Section Name mismatches")}'
                                    f': review {os.path.basename(_STR_ERROR_PATH)}')
     return ark_common.NOTHING, 'No STR errors found'
+
+
+def aoi_mirror_step():
+    """Mirror's AOI step (its last; reported after the other steps): run the AOI check and return
+    (result kind, report line) saying whether the AOI error report has any rows to review."""
+    errors = main(aoi=True)
+    report = os.path.basename(_AOI_ERROR_PATH)
+    if errors:
+        return ark_common.REVIEW, f'{ark_common.plural(errors, "row")} in the error report: review {report}'
+    return ark_common.NOTHING, f'No rows in the error report ({report})'
 
 
 def _button():

@@ -1,4 +1,5 @@
-"""STR Verification and AOI buttons (str_verification.py, without / with --aoi).
+"""STR Verification and AOI buttons (str_verification.py, without / with --aoi), and their
+Mirror steps (mirror_step, aoi_mirror_step).
 
 The check runs on a hand-built Check STR report; main() is run against the fake Ark site
 to confirm each button writes only its own report, in its own folder
@@ -74,54 +75,122 @@ def test_str_check_writes_mismatches_only(work):
     assert list(work.aoi.iterdir()) == []
 
 
-def test_aoi_check_writes_unverifiable_areas_only(work):
-    """AOI must contain the section and township-range, or the Section Name; Non-Ops and blank pass."""
+_TWO_TOWNSHIPS = '2, 11-146N-102W, 26, 35-147N-102W _ Seek And Destroy'  # AOI spanning two townships (real name)
+
+
+@pytest.mark.parametrize('name, expected', [
+    ('13, 24-1S-1E _ Lupine', {(13, (1, 'S'), (1, 'E')), (24, (1, 'S'), (1, 'E'))}),
+    ('24, 25, 36-39N-71W', {(24, (39, 'N'), (71, 'W')), (25, (39, 'N'), (71, 'W')),
+                            (36, (39, 'N'), (71, 'W'))}),                                   # no "_ Name"
+    (_TWO_TOWNSHIPS, {(2, (146, 'N'), (102, 'W')), (11, (146, 'N'), (102, 'W')),
+                      (26, (147, 'N'), (102, 'W')), (35, (147, 'N'), (102, 'W'))}),
+    ('19-155N-89W, 24-155N-90W _ George', {(19, (155, 'N'), (89, 'W')), (24, (155, 'N'), (90, 'W'))}),
+    ('3, 10-28N-56E, 29, 32-29N-56E _ Poseidon (Super Unit)',
+     {(3, (28, 'N'), (56, 'E')), (10, (28, 'N'), (56, 'E')), (29, (29, 'N'), (56, 'E')), (32, (29, 'N'), (56, 'E'))}),
+    ('04,09 - 153n - 097w _ Spacing', {(4, (153, 'N'), (97, 'W')), (9, (153, 'N'), (97, 'W'))}),  # zeros, case, spaces
+    ('Sec 4, 153N-97W', None),          # not the AOI name format
+    ('4, 9 _ Missing Township', None),
+    ('4, 9-153N _ Missing Range', None),
+])
+def test_aoi_names_parse_into_the_sections_they_cover(name, expected):
+    """Every format seen in the 11/10/2026 report parses section by section, each section tied to
+    its own township-range; names that don't follow the format give None."""
+    assert sv._aoi_sections(name) == expected
+
+
+@pytest.mark.parametrize('section_name, section, township, range_, township_name, expected', [
+    ('04-153N-97W', '4', '153N', '97W', '153N-97W', (4, (153, 'N'), (97, 'W'))),
+    ('25-162N-92W', '25', '162', '92W', '162-92W', (25, (162, 'N'), (92, 'W'))),   # Township lacks N: Section Name wins
+    ('', '20', '160N', '97W', '160N-97W', (20, (160, 'N'), (97, 'W'))),            # blank name: S-T-R fields
+    ('28-36-3N-TP', '7', '', '', 'T153N-R97W', (7, (153, 'N'), (97, 'W'))),        # bad name, no T/R: Township Name
+    ('', '', '', '', '', None),
+])
+def test_row_section_reads_the_name_then_the_str_fields(section_name, section, township, range_,
+                                                        township_name, expected):
+    """A row's section comes from its Section Name, else Section/Township/Range, else Township Name."""
+    assert sv._row_section(section_name, section, township, range_, township_name) == expected
+
+
+def test_aoi_check_writes_rows_outside_their_area_only(work):
+    """The row's section must be one the AOI name lists; Non-Ops and blank AOIs are skipped."""
     write_csv(work.aoi / _INPUT, [
         _HEADER,
-        _row('LH-1', '4', '153N', '97W', '04-153N-97W', aoi='Sec 4, 153N-97W'),     # section + T-R
-        _row('LH-2', '5', '153N', '97W', '05-153N-97W', aoi='Unit 05-153N-97W'),    # Section Name
+        _row('LH-1', '4', '153N', '97W', '04-153N-97W', aoi='4, 9-153N-97W _ Alpha'),        # first section
+        _row('LH-2', '9', '153N', '97W', '09-153N-97W', aoi='4, 9-153N-97W _ Alpha'),        # last section
         _row('LH-3', '6', '153N', '97W', '06-153N-97W', aoi='Non-Ops'),
         _row('LH-4', '7', '153N', '97W', '07-153N-97W', aoi=''),
-        _row('LH-5', '8', '153N', '97W', '08-153N-97W', aoi='Sec 9, 153N-97W'),     # wrong section
+        _row('LH-5', '8', '153N', '97W', '08-153N-97W', aoi='4, 9-153N-97W _ Alpha'),        # wrong section
+        _row('LH-6', '4', '154N', '97W', '04-154N-97W', aoi='4, 9-153N-97W _ Alpha'),        # wrong township
+        _row('LH-7', '4', '153N', '97W', '04-153N-97W', aoi='Sec 4, 153N-97W'),              # unreadable AOI
     ])
 
-    sv._process(aoi=True)
+    assert sv._process(aoi=True) == 3
 
     rows = read_csv(work.aoi / _AOI_NAME)
     assert rows == [
         ['ID', 'Section Name', 'Combined STR', 'Area of Interest', 'Issue'],
-        ['LH-5', '08-153N-97W', '08-153N-97W', 'Sec 9, 153N-97W', 'area of interest cannot be verified automatically'],
+        ['LH-5', '08-153N-97W', '08-153N-97W', '4, 9-153N-97W _ Alpha',
+         "Section 8 isn't in this Area of Interest's 153N-97W sections"],
+        ['LH-6', '04-154N-97W', '04-154N-97W', '4, 9-153N-97W _ Alpha',
+         "Township-range 154N-97W isn't in this Area of Interest"],
+        ['LH-7', '04-153N-97W', '04-153N-97W', 'Sec 4, 153N-97W',
+         "Area of Interest can't be read (expected like '1, 12, 13-150N-100W _ Name')"],
     ]
     assert list(work.str.iterdir()) == []
 
 
-def test_aoi_section_is_not_matched_inside_a_longer_number(work):
-    """Section 4 should not be verified by an AOI that only mentions section 14."""
-    write_csv(work.aoi / _INPUT, [
-        _HEADER, _row('LH-1', '4', '153N', '97W', '04-153N-97W', aoi='Sec 14, 153N-97W')])
-
-    sv._process(aoi=True)
-
-    rows = read_csv(work.aoi / _AOI_NAME)
-    assert [r[0] for r in rows[1:]] == ['LH-1']
-
-
-def test_aoi_numbers_match_only_as_whole_numbers(work):
-    """Section, township-range and Section Name count only as whole numbers: "53N-97W" isn't
-    found inside "153N-97W", nor "4-153N-97W" inside "14-153N-97W"; leading zeros still match."""
+def test_aoi_section_is_tied_to_its_own_township(work):
+    """In an AOI spanning two townships, a section counts only under the township it's listed
+    with: 26-146N-102W isn't covered by "2, 11-146N-102W, 26, 35-147N-102W". The old check
+    passed it, because "26," and "146N-102W" each appear somewhere in the name."""
     write_csv(work.aoi / _INPUT, [
         _HEADER,
-        _row('LH-1', '4', '53N', '97W', '04-53N-97W', aoi='Sec 4, 153N-97W'),       # township inside a longer one
-        _row('LH-2', '4', '153N', '97W', '4-153N-97W', aoi='Unit 14-153N-97W'),     # Section Name inside a longer one
-        _row('LH-3', '4', '153N', '97W', '04-153N-97W', aoi='Sec 04, 153N-97W'),    # zero-padded section matches
-        _row('LH-4', '4', '153N', '97W', '4-153N-97W', aoi='Unit 04-153N-97W'),     # zero-padded Section Name matches
-        _row('LH-5', '14', '153N', '97W', '14-153N-97W', aoi='Secs 2, 14, 153N-97W'),  # one of several sections
+        _row('LH-1', '26', '146N', '102W', '26-146N-102W', aoi=_TWO_TOWNSHIPS),   # 26 is listed under 147N only
+        _row('LH-2', '11', '147N', '102W', '11-147N-102W', aoi=_TWO_TOWNSHIPS),   # 11 is listed under 146N only
+        _row('LH-3', '2', '146N', '102W', '02-146N-102W', aoi=_TWO_TOWNSHIPS),
+        _row('LH-4', '11', '146N', '102W', '11-146N-102W', aoi=_TWO_TOWNSHIPS),
+        _row('LH-5', '26', '147N', '102W', '26-147N-102W', aoi=_TWO_TOWNSHIPS),
+        _row('LH-6', '35', '147N', '102W', '35-147N-102W', aoi=_TWO_TOWNSHIPS),
     ])
 
     sv._process(aoi=True)
 
     rows = read_csv(work.aoi / _AOI_NAME)
     assert [r[0] for r in rows[1:]] == ['LH-1', 'LH-2']
+
+
+def test_aoi_section_is_not_matched_inside_a_longer_number(work):
+    """Section 4 isn't covered by an AOI that lists section 14, nor township 53N by one listing 153N."""
+    write_csv(work.aoi / _INPUT, [
+        _HEADER,
+        _row('LH-1', '4', '153N', '97W', '04-153N-97W', aoi='14, 23-153N-97W _ Beta'),
+        _row('LH-2', '4', '53N', '97W', '04-53N-97W', aoi='4, 9-153N-97W _ Alpha'),
+    ])
+
+    sv._process(aoi=True)
+
+    rows = read_csv(work.aoi / _AOI_NAME)
+    assert [r[0] for r in rows[1:]] == ['LH-1', 'LH-2']
+
+
+def test_aoi_reads_rows_with_a_bad_township_or_blank_section_name(work):
+    """Rows the old check got wrong or skipped: Township "162" without N (real row, 11/10/2026)
+    is read from its Section Name; a blank Section Name is read from Section/Township/Range."""
+    write_csv(work.aoi / _INPUT, [
+        _HEADER,
+        _row('LH-1', '25', '162', '92W', '25-162N-92W', '162-92W', aoi='13, 24, 25, 36-162N-92W _ Sandor'),
+        _row('LH-2', '20', '160N', '97W', '', '160N-97W', aoi='17, 20, 29-160N-97W _ Gamma'),
+        _row('LH-3', '21', '160N', '97W', '', '160N-97W', aoi='17, 20, 29-160N-97W _ Gamma'),
+        _row('LH-4', '', '', '', '', '', aoi='17, 20, 29-160N-97W _ Gamma'),
+    ])
+
+    sv._process(aoi=True)
+
+    rows = read_csv(work.aoi / _AOI_NAME)
+    assert [(r[0], r[4]) for r in rows[1:]] == [
+        ('LH-3', "Section 21 isn't in this Area of Interest's 160N-97W sections"),
+        ('LH-4', "Section can't be read from Section Name or Section/Township/Range"),
+    ]
 
 
 @pytest.mark.parametrize('argv, own_folder, other_folder, expected_report', [
@@ -162,6 +231,39 @@ def test_mirror_step_reports_the_mismatch_count(fake_ark, work, monkeypatch):
     assert sv.mirror_step() == (ark_common.REVIEW, '1 Section Name mismatch: review Error_Report.csv')
     assert (work.str / 'Error_Report.csv').exists()
     assert list(work.aoi.iterdir()) == []
+
+
+def test_aoi_mirror_step_reports_the_rows_to_review(fake_ark, work, monkeypatch):
+    """Mirror's AOI step runs the AOI check only (whatever the command line), writes the dated
+    report in the AOI folder, and says how many rows it has and to review it."""
+    fake_ark.serve(sv._REPORT_URL, [
+        _HEADER,
+        _row('LH-1', '4', '153N', '97W', '04-153N-97W', aoi='4, 9-153N-97W _ Alpha'),
+        _row('LH-2', '8', '153N', '97W', '08-153N-97W', aoi='4, 9-153N-97W _ Alpha'),
+        _row('LH-3', '9', '154N', '97W', '09-154N-97W', aoi='4, 9-153N-97W _ Alpha'),
+    ])
+    monkeypatch.setattr(sys, 'argv', ['mirror.py'])
+
+    assert sv.aoi_mirror_step() == (ark_common.REVIEW, f'2 rows in the error report: review {_AOI_NAME}')
+    assert [r[0] for r in read_csv(work.aoi / _AOI_NAME)[1:]] == ['LH-2', 'LH-3']
+    assert list(work.str.iterdir()) == []
+
+
+def test_aoi_mirror_step_with_an_empty_report(fake_ark, work):
+    """Every row is inside its AOI: the step says the error report has no rows (and still writes it)."""
+    fake_ark.serve(sv._REPORT_URL, [
+        _HEADER, _row('LH-1', '4', '153N', '97W', '04-153N-97W', aoi='4, 9-153N-97W _ Alpha')])
+
+    assert sv.aoi_mirror_step() == (ark_common.NOTHING, f'No rows in the error report ({_AOI_NAME})')
+    assert read_csv(work.aoi / _AOI_NAME) == [['ID', 'Section Name', 'Combined STR', 'Area of Interest', 'Issue']]
+
+
+def test_aoi_mirror_step_one_row_is_singular(fake_ark, work):
+    """One row reads "1 row", not "1 rows"."""
+    fake_ark.serve(sv._REPORT_URL, [
+        _HEADER, _row('LH-2', '8', '153N', '97W', '08-153N-97W', aoi='4, 9-153N-97W _ Alpha')])
+
+    assert sv.aoi_mirror_step() == (ark_common.REVIEW, f'1 row in the error report: review {_AOI_NAME}')
 
 
 def test_mirror_step_with_no_mismatches(fake_ark, work):

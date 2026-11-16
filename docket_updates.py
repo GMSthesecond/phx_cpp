@@ -1,4 +1,5 @@
-"""Docket Updates, launched by the "Docket Updates" button.
+"""Docket Updates Sheet, launched by the "Docket Updates Sheet" button (column 1, below SIB).
+Docket Updates Slack (docket_updates_slack.py) is the Slack version and shares its output folder.
 
 Reads the ND and MT sheets of the Hearing Dockets workbook in Box ([Files] HearingDockets, default
 _DEFAULT_WORKBOOK), downloads the RW cases report from Ark (RW_Case_Info.csv) and compares every case
@@ -118,8 +119,8 @@ class InputError(Exception):
 
 
 def _notify(message, flags=0x40):
-    """Show a message box titled "Docket Updates" (info icon unless flags say otherwise)."""
-    ark_common.notify('Docket Updates', message, flags)
+    """Show a message box titled "Docket Updates Sheet" (info icon unless flags say otherwise)."""
+    ark_common.notify('Docket Updates Sheet', message, flags)
 
 
 def _write_csv(path, header, rows):
@@ -316,7 +317,7 @@ def _read_workbook(path):
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     except PermissionError:
         raise InputError(f'Could not open the Hearing Dockets workbook:\n{path}\n\n'
-                         'If Box is still syncing it, wait a moment and click Docket Updates again.')
+                         'If Box is still syncing it, wait a moment and click Docket Updates Sheet again.')
     try:
         rows = []
         for name in _SHEETS:
@@ -680,12 +681,12 @@ def main(today=None):
         _write_csv(paths[1], ['Record Id'] + fields, uploads)
         _write_csv(paths[2], _MISSING_HEADER, missing)
     except PermissionError as e:
-        _notify(f'Could not write {e.filename or paths[0]}.\n\nClose it in Excel and click Docket Updates again.',
+        _notify(f'Could not write {e.filename or paths[0]}.\n\nClose it in Excel and click Docket Updates Sheet again.',
                 0x10)
         return
     _notify(_summary(compared, len(rw), counts, uploads, fields, paths))
 
 
 if __name__ == '__main__':
-    ark_common.run_button('Docket Updates', main,
+    ark_common.run_button('Docket Updates Sheet', main,
                           os.path.join(ark_common.read_folder('DocketUpdates', _DEFAULT_DIR), 'docket_updates_error.log'))

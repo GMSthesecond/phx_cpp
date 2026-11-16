@@ -2,8 +2,9 @@
 
 Most tests swap mirror.STEPS for small fake steps, so they check the runner itself: the
 @STAGE progress tags main.cpp reads, carrying on after a failure, the report's grouping, the
-dated archive file and the final message box. conftest keeps the steps in this process
-(mirror.RUN_IN_CHILD = False); the child-process runner and its time limit are tested with
+dated archive file, the final message box and a step failed by a refused large download. conftest keeps the steps in
+this process (mirror.RUN_IN_CHILD = False); the child-process runner and its time limit (paused while a
+large-download box waits) are tested with
 harmless `python -c` children, and so is the Stop button's stop file (remaining steps Not run, the
 running child's process tree killed). The Index step is tested with the county scripts' main() replaced.
 One test runs the real Ark steps end to end against the fake Ark site.
@@ -21,6 +22,7 @@ import ark_common
 import case_unit_names
 import close_dates
 import cost_to_extend
+import docket_updates_slack
 import mirror
 import non_hbp_mi
 import section_id_blank
@@ -90,6 +92,53 @@ def test_runs_steps_in_order_and_reports_each(folders, monkeypatch, msgboxes, ca
     assert text == report.rstrip('\n') + f'\n\nSaved to {_report_path(folders)}'
 
 
+@pytest.mark.parametrize('result, error, last_line', [
+    ((ark_common.REVIEW, '3 rows in the error report: review AOI 11.10.2026.csv'), None,
+     'AOI: 3 rows in the error report: review AOI 11.10.2026.csv'),
+    ((ark_common.NOTHING, 'No rows in the error report (AOI 11.10.2026.csv)'), None,
+     'AOI: No rows in the error report (AOI 11.10.2026.csv)'),
+    (None, RuntimeError('Timeout'), 'AOI: Failed: RuntimeError: Timeout'),
+])
+def test_a_report_last_step_ends_the_report(folders, monkeypatch, msgboxes, capsys, result, error, last_line):
+    """A report_last step (AOI) is left out of the result groups and gets the report's last line,
+    whatever its result; a failure still says Failed and turns the box's icon to a warning."""
+    monkeypatch.setattr(mirror, 'STEPS', [
+        _step('STR', (ark_common.REVIEW, '1 Section Name mismatch: review Error_Report.csv')),
+        mirror.Step('AOI', _step('AOI', result, error).run, uploads=False, report_last=True),
+        _step('C2E', (ark_common.NOTHING, 'Nothing to fix')),
+    ])
+    flags = []
+    monkeypatch.setattr(mirror, '_show', lambda text, icon, links=(): flags.append(icon))
+
+    mirror.main()
+
+    lines = _report_path(folders).read_text(encoding='utf-8').splitlines()
+    assert lines[1:] == [
+        '', 'Needs review', '  STR: 1 Section Name mismatch: review Error_Report.csv',
+        '', 'No changes', '  C2E: Nothing to fix',
+        '', last_line,
+    ]
+    assert flags == [mirror._MB_ICONWARNING if error else mirror._MB_ICONINFORMATION]
+
+
+def test_a_report_last_step_skipped_by_stop_says_not_run(folders, monkeypatch, msgboxes, capsys, tmp_path):
+    """After a Stop, the AOI line at the end says it didn't run."""
+    stop = tmp_path / 'stop.flag'
+
+    def first():
+        """Clicks Stop while the first step runs."""
+        stop.write_text('')
+        return ark_common.NOTHING, 'done'
+    monkeypatch.setattr(mirror, 'STEPS', [mirror.Step('STR', first, uploads=False),
+                                          mirror.Step('AOI', lambda: None, uploads=False, report_last=True)])
+
+    mirror.main(str(stop))
+
+    lines = _report_path(folders).read_text(encoding='utf-8').splitlines()
+    assert lines[-1] == 'AOI: Not run: Skipped because Mirror was stopped'
+    assert '  AOI: Skipped because Mirror was stopped' not in lines
+
+
 def test_progress_tags_split_the_bar_between_steps(folders, monkeypatch, msgboxes, capsys):
     """Each step gets an equal share of the bar, then "@FINISHED" comes before the message box."""
     monkeypatch.setattr(mirror, 'STEPS', [_step(n, (ark_common.NOTHING, 'ok')) for n in ('A', 'B', 'C')])
@@ -112,7 +161,7 @@ def test_a_failed_step_is_reported_last_and_the_rest_still_run(folders, monkeypa
         _step('Case Update', (ark_common.UPLOADED, "Updated 3 units to today's date"), log=log),
     ])
     flags = []
-    monkeypatch.setattr(mirror, '_show', lambda text, icon: flags.append(icon))
+    monkeypatch.setattr(mirror, '_show', lambda text, icon, links=(): flags.append(icon))
 
     mirror.main()
 
@@ -125,6 +174,127 @@ def test_a_failed_step_is_reported_last_and_the_rest_still_run(folders, monkeypa
         '  Close Date: RuntimeError: Timeout 120000ms exceeded.',
     ]
     assert flags == [mirror._MB_ICONWARNING]
+
+
+def test_a_large_download_said_no_to_fails_only_that_step(folders, monkeypatch, fake_ark, msgboxes, capsys):
+    """A step whose large report the user refused in the Yes/No box is Failed with the count and link
+    (and downloads nothing); a step whose large report was allowed downloads it; the rest still run."""
+    big, bigger = ('https://ark.phoenixenergy.com/report?recordId=big',
+                   'https://ark.phoenixenergy.com/report?recordId=bigger')
+    fake_ark.serve(big, [['Id'], ['1']], records=10_500)
+    fake_ark.serve(bigger, [['Id'], ['1']], records=286_722)
+
+    def downloads(url):
+        """A step run() that downloads url."""
+        def run():
+            with ark_common.ark_page(url) as page:
+                ark_common.trigger_download(page, url)
+            return ark_common.NOTHING, 'ok'
+        return run
+    monkeypatch.setattr(mirror, 'STEPS', [
+        mirror.Step('TPP-LHPP', downloads(big), uploads=False),
+        _step('STR', (ark_common.NOTHING, 'No STR errors found')),
+        mirror.Step('C2E', downloads(bigger), uploads=True),
+    ])
+    msgboxes.answers = [6, 7]  # Yes for TPP-LHPP's report, No for C2E's
+
+    mirror.main()
+
+    lines = _report_path(folders).read_text(encoding='utf-8').splitlines()
+    assert '  TPP-LHPP: ok' in lines and '  STR: No STR errors found' in lines
+    assert lines[-2:] == ['Failed', f'  C2E: Large download cancelled: 286,722 records, {bigger}']
+    assert fake_ark.downloads == [big]
+    assert [title for title, _ in msgboxes] == ['Large Ark download', 'Large Ark download', 'Mirror']
+
+
+def _link(target):
+    """Task-dialog markup for a clickable link to target."""
+    return f'<a href="{target}">{target}</a>'
+
+
+def test_report_links_and_archive_path_are_clickable(folders, monkeypatch, msgboxes, task_dialogs, capsys, tmp_path):
+    """The report opens in a task dialog where each web link in a step's line (e.g. a cancelled large
+    report's) and the archive path are links; the text is otherwise the report (and the archive still
+    has plain text)."""
+    urls = ['https://ark.phoenixenergy.com/report?recordId=big', 'https://ark.phxcapitalgroup.com/report?recordId=b2']
+
+    def run():
+        """A step whose line names two reports."""
+        return ark_common.REVIEW, f'Check 10,500 records, {urls[0]}; 10,500 records, {urls[1]}'
+    monkeypatch.setattr(mirror, 'STEPS', [mirror.Step('PPIQ', run, uploads=False)])
+
+    mirror.main()
+
+    [(title, content, icon)] = task_dialogs
+    archive = str(_report_path(folders))
+    assert (title, icon) == ('Mirror', mirror._MB_ICONINFORMATION)
+    assert (f'10,500 records, {_link(urls[0])}; 10,500 records, {_link(urls[1])}' in content)
+    assert content.endswith(f'Saved to {_link(archive)}')
+    assert '<a ' not in _report_path(folders).read_text(encoding='utf-8')
+    assert msgboxes[0][1].endswith(f'Saved to {archive}')  # same text once the links are taken out
+
+
+@pytest.mark.parametrize('text, expected', [
+    ('see https://x.com/r?recordId=1.', f'see {_link("https://x.com/r?recordId=1")}.'),       # sentence end
+    ('(https://x.com/a)', f'({_link("https://x.com/a")})'),                                   # in brackets
+    ('a https://x.com/a, b http://y.com/b;', f'a {_link("https://x.com/a")}, b {_link("http://y.com/b")};'),
+    ('No links here: C2E ok', 'No links here: C2E ok'),
+])
+def test_with_links_wraps_urls_without_their_punctuation(text, expected):
+    """Each web link becomes a link; punctuation after it stays text."""
+    assert mirror._with_links(text) == expected
+
+
+def test_with_links_wraps_a_given_path_with_spaces_and_dots():
+    """A path passed in links is linked whole (spaces, dots and all); None (archive not saved) is ignored."""
+    path = r'C:\Users\Me\Desktop\Dailies\Archive\Mirror 11.03.2026.txt'
+    assert mirror._with_links(f'Saved to {path}', [path, None]) == f'Saved to {_link(path)}'
+
+
+def test_report_falls_back_to_a_message_box_when_the_task_dialog_cannot_open(monkeypatch, msgboxes):
+    """If Windows won't show the task dialog, the plain report goes in the old topmost message box."""
+    def refuse(title, content, icon):
+        raise OSError('no Common Controls 6')
+    monkeypatch.setattr(mirror, '_task_dialog', refuse)
+    shown = []
+    monkeypatch.setattr(mirror.ctypes.windll.user32, 'MessageBoxW',
+                        lambda hwnd, text, title, flags: shown.append((text, title, flags)))
+
+    mirror._show('Report https://x.com/a', mirror._MB_ICONWARNING, links=['C:\\a.txt'])
+
+    assert shown == [('Report https://x.com/a', 'Mirror', mirror._MB_ICONWARNING | mirror._MB_TOPMOST)]
+
+
+def test_clicking_a_link_opens_it(monkeypatch):
+    """The dialog's link-click notification opens that link (browser or file); other notifications
+    don't, and a link that won't open doesn't break the dialog."""
+    opened = []
+    monkeypatch.setattr(mirror.os, 'startfile', opened.append)
+    href = mirror.ctypes.create_unicode_buffer('https://ark.phoenixenergy.com/report?recordId=big')
+    address = mirror.ctypes.addressof(href)
+
+    assert mirror._on_dialog_event(None, mirror._TDN_HYPERLINK_CLICKED, 0, address, 0) == 0
+    assert mirror._on_dialog_event(None, 2, 0, address, 0) == 0  # TDN_BUTTON_CLICKED: nothing to open
+    assert opened == ['https://ark.phoenixenergy.com/report?recordId=big']
+
+    def fail(target):
+        raise OSError('no program for it')
+    monkeypatch.setattr(mirror.os, 'startfile', fail)
+    assert mirror._on_dialog_event(None, mirror._TDN_HYPERLINK_CLICKED, 0, address, 0) == 0
+
+
+@pytest.mark.skipif(sys.maxsize <= 2**32, reason='offsets measured for 64-bit Python')
+def test_task_dialog_structs_match_the_windows_headers():
+    """TASKDIALOGCONFIG is byte-packed in commctrl.h; a wrong layout crashes the dialog. Sizes and
+    offsets as MSVC's headers give them on 64-bit (measured 11/3/2026)."""
+    cfg, ctx = mirror._TaskDialogConfig, mirror._ActCtx
+    assert mirror.ctypes.sizeof(cfg) == 160
+    assert {name: getattr(cfg, name).offset for name in (
+        'hwndParent', 'dwFlags', 'pszWindowTitle', 'pszContent', 'cButtons', 'pButtons', 'nDefaultButton',
+        'pszFooter', 'pfCallback', 'lpCallbackData', 'cxWidth')} == {
+        'hwndParent': 4, 'dwFlags': 20, 'pszWindowTitle': 28, 'pszContent': 52, 'cButtons': 60, 'pButtons': 64,
+        'nDefaultButton': 72, 'pszFooter': 132, 'pfCallback': 140, 'lpCallbackData': 148, 'cxWidth': 156}
+    assert (mirror.ctypes.sizeof(ctx), ctx.lpSource.offset, ctx.hModule.offset) == (56, 8, 48)
 
 
 @pytest.mark.parametrize('error, expected', [
@@ -214,6 +384,27 @@ def test_a_step_past_the_time_limit_is_stopped_with_its_children(tmp_path, capsy
     assert str(grandchild) not in alive, 'the hung step\'s own child process was left running'
 
 
+def test_time_spent_on_a_large_download_box_does_not_count(monkeypatch, capsys):
+    """While the child waits on a large-download Yes/No box (between @WAITING and @RESUMED) its time
+    limit is paused, so a slow answer doesn't get the step killed; the progress label says it's waiting
+    meanwhile, and the two tags themselves aren't passed on to main.cpp."""
+    monkeypatch.setattr(mirror, '_stage', (10, 20, 'Step 2 of 9: PPIQ'))
+    code = ("import time; print('@WAITING', flush=True); time.sleep(4); print('@RESUMED', flush=True); "
+            "print('@RESULT No changes\\tok', flush=True)")
+    assert mirror._run_in_child(_py(code), 2) == (ark_common.NOTHING, 'ok')
+    assert capsys.readouterr().out.splitlines() == [
+        '@STAGE 10 20 Step 2 of 9: PPIQ: waiting for your answer (large download)',
+        '@STAGE 10 20 Step 2 of 9: PPIQ']
+
+
+def test_the_time_limit_runs_again_after_the_box_is_answered(capsys):
+    """Once the box is answered the step's time limit applies again (only the wait was taken off)."""
+    code = ("import time; print('@WAITING', flush=True); print('@RESUMED', flush=True); time.sleep(60)")
+    started = time.monotonic()
+    assert mirror._run_in_child(_py(code), 2) == (mirror.FAILED, 'Stopped: still running after 0 min')
+    assert time.monotonic() - started < 20
+
+
 def test_a_child_that_crashes_is_failed_with_its_last_words(capsys):
     """A child that ends without @RESULT (e.g. a missing package at import) fails with its last output line."""
     kind, message = mirror._run_in_child(_py("import no_such_package_xyz"), 30)
@@ -268,7 +459,7 @@ def test_stop_skips_the_remaining_steps_and_still_reports(folders, monkeypatch, 
                                           _step('B', (ark_common.NOTHING, 'ok'), log=log),
                                           _step('C', (ark_common.NOTHING, 'ok'), log=log)])
     flags = []
-    monkeypatch.setattr(mirror, '_show', lambda text, icon: flags.append(icon))
+    monkeypatch.setattr(mirror, '_show', lambda text, icon, links=(): flags.append(icon))
 
     mirror.main(str(stop))
 
@@ -422,11 +613,13 @@ def test_steps_are_the_mirror_buttons_in_order():
     """STEPS names real buttons (main.cpp's g_mirrorSteps must match; see test_wiring)."""
     names = [s.name for s in mirror.STEPS]
     assert names == ['Index', 'Close Date', 'Case Update', 'STR', 'TPP-LHPP', 'C2E',
-                     'Cases Unit Names', 'SIB']
+                     'Cases Unit Names', 'SIB', 'Docket Updates Slack', 'AOI']
     for name in names:
         by_label(name)
     assert [s.name for s in mirror.STEPS if s.uploads] == ['Close Date', 'Case Update', 'C2E',
                                                            'Cases Unit Names', 'SIB']
+    assert [s.name for s in mirror.STEPS if s.report_last] == ['AOI']
+    assert mirror.STEPS[-1].run is str_verification.aoi_mirror_step
 
 
 def test_full_run_against_the_fake_ark(fake_ark, folders, monkeypatch, msgboxes, capsys, tmp_path):
@@ -437,15 +630,19 @@ def test_full_run_against_the_fake_ark(fake_ark, folders, monkeypatch, msgboxes,
     monkeypatch.setattr(ark_common, 'upload', upload)
     monkeypatch.setattr(str_verification, '_INPUT_PATH', str(tmp_path / 'Check_STR.csv'))
     monkeypatch.setattr(str_verification, '_STR_ERROR_PATH', str(tmp_path / 'Error_Report.csv'))
+    monkeypatch.setattr(str_verification, '_AOI_INPUT_PATH', str(tmp_path / 'AOI' / 'Check_STR.csv'))
+    monkeypatch.setattr(str_verification, '_AOI_ERROR_PATH', str(tmp_path / 'AOI' / 'AOI 11.10.2026.csv'))
     monkeypatch.setattr(tpp_lhpp, '_OUT_DIR', str(tmp_path))
 
-    fake_ark.serve(close_dates._REPORT_URL, [['Name', 'Id', 'Close Date', 'Status', 'x'],
-                                             ['a', 'LH-1', '09/25/2026', 'Closed', ''],
-                                             ['d', 'LH-2', '09/25/2026', 'Deferred', '']])
+    fake_ark.serve(close_dates._REPORT_URL, [['Offer: Offer Name', 'LandHoldingTransaction: LandHolding Id',
+                                              'Offer: Close Date', 'Offer: Status'],
+                                             ['a', 'LH-1', '09/25/2026', 'Paid'],
+                                             ['d', 'LH-2', '09/25/2026', 'Deferred']])
     fake_ark.serve(non_hbp_mi._REPORT_URL, [['Record Id', 'Updated Date'], ['U-1', ''], ['U-2', '']])
     fake_ark.serve(str_verification._REPORT_URL, [
         ['Id', 'Section', 'Township', 'Range', 'Section Name', 'Township Name', 'Section Id', 'Area of Interest'],
-        ['LH-3', '12', '153N', '97W', '12-153N-98W', '', '', '']])
+        ['LH-3', '12', '153N', '97W', '12-153N-98W', '', '', ''],
+        ['LH-6', '4', '153N', '97W', '04-153N-97W', '', '', '9, 16-153N-97W _ Alpha']])  # outside its AOI
     soon = f'{date.today():%Y-%m-%d}'
     fake_ark.serve(tpp_lhpp._REPORT_URLS[0][0], [['Id', 'Total Purchase Price', 'Status', 'Close Date'],
                                                  ['OF-1', '100', 'Open', soon]], filename=tpp_lhpp._OFFERS_FILENAME)
@@ -465,6 +662,12 @@ def test_full_run_against_the_fake_ark(fake_ark, folders, monkeypatch, msgboxes,
     fake_ark.serve(section_id_blank._BLANK_URL, [['Id', 'Section Name', 'Section Id', 'State'],
                                                  ['LH-5', '1-150N-100W', '', 'ND']])
     fake_ark.serve(section_id_blank._SECTIONS_URL, [['Section: Id', 'Section Name'], ['S-1', '1-150N-100W']])
+    (folders['SIB'] / section_id_blank._INDEX_FILE).write_text('Section Name,Section Id,Updated\n', encoding='utf-8')
+    post = {'type': 'message', 'user': docket_updates_slack._USER_ID, 'ts': f'{time.time():.6f}',
+            'text': 'Case 33068 (X): Pooling: GRANTED'}  # one #docket-updates post (Slack itself is tested elsewhere)
+    monkeypatch.setattr(docket_updates_slack, '_fetch_messages', lambda token, oldest: {post['ts']: post})
+    fake_ark.serve(docket_updates_slack._REPORT_URL, [['Record Id', 'Case Number', 'Case Status'],
+                                                      ['REC-1', '33068', 'Docketed']])
 
     mirror.main()
 
@@ -477,8 +680,13 @@ def test_full_run_against_the_fake_ark(fake_ark, folders, monkeypatch, msgboxes,
                  '  TPP-LHPP: 1 price mismatch closing in the next two weeks: review PHX_Price_Paid_Export.xlsx',
                  '  Index: No new documents',
                  '  Cases Unit Names: Uploaded PHX Unit Names for 1 case',
-                 '  SIB: Uploaded Section Ids for 1 landholding']:
+                 '  SIB: Uploaded Section Ids for 1 landholding',
+                 '  Docket Updates Slack: 1 RW record to fix (1 in Slack_Docket_Upload.csv, not uploaded): '
+                 'review Slack_Docket_Differences.xlsx']:
         assert line in text.splitlines()
     assert 'Failed' not in text
+    report = text.split('\n\nSaved to ')[0]
+    assert report.endswith('\n\nAOI: 1 row in the error report: review AOI 11.10.2026.csv')
+    assert (tmp_path / 'AOI' / 'AOI 11.10.2026.csv').exists()
     assert [kw['dataset'] for _, kw in upload.calls] == ['Landholdings', 'Units', 'Landholdings', 'Cases',
                                                                'Landholdings']

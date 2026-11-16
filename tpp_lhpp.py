@@ -5,15 +5,17 @@ the TPP-LHPP folder, sums LHT values per offer, and writes offers whose Total Pu
 Price differs from their LHT total by more than $1 to PHX_Price_Paid_Export.xlsx, then
 shows a message box saying which exported offers (if any) have a Close Date.
 Also Mirror's "TPP-LHPP" step (mirror_step): no message box, and the report line counts only
-mismatches closing in the next two weeks.
+mismatches closing in the next two weeks; when the new export has exactly the rows of the one it
+replaced, the step is "No changes" instead of "Needs review".
 Uses ark_common (credentials, login, session.json), Playwright and openpyxl; errors are
 shown in a message box since the launcher gives the script no console.
 """
 import csv
 import os
+from collections import Counter
 from datetime import date, timedelta
 import ark_common
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 from openpyxl.cell import WriteOnlyCell
 
@@ -38,6 +40,8 @@ _REPORT_URLS = [
 _OFFERS_FILENAME = 'Offers_Report_For_Price_Comparison_EM.csv'  # expected name of the downloaded Offers report
 _LHT_FILENAME = 'LandHoldingTransactions_For_Price_Comparison_EM.csv'  # expected name of the downloaded LHT report
 _EXPORT_FILENAME = 'PHX_Price_Paid_Export.xlsx'  # mismatch workbook written to _OUT_DIR
+_EXPORT_SHEET = 'Export Data'  # its only sheet
+_EXPORT_HEADER = ['Offer ID', 'Total Purchase Price', 'LHT Price Total', 'Close Date', 'Status']  # its first row
 _MAX_LISTED = 25  # most offers named in the Close Date message box; the rest are only counted
 _SOON_DAYS = 14  # Mirror counts mismatches closing from today through this many days out
 
@@ -135,20 +139,42 @@ def _process_lht(offers):
             offers[offer_id]['lht_tpp'] = lht_tpp
 
 
-def _export(offers):
-    """Write offers whose LHT total and TPP differ by more than $1 to the yellow-highlighted export workbook.
+def _row_key(values):
+    """A workbook row as compared by _export_rows: blanks as '' (a written '' reads back as None)."""
+    return tuple('' if v is None else v for v in values)
 
-    Returns the exported offer Ids in row order.
+
+def _export_rows(path):
+    """Counter of the rows (header included, _row_key) of the export workbook at path, so two exports
+    compare equal whatever order Ark listed the offers in; None if there's no file or it can't be read."""
+    if not os.path.exists(path):
+        return None
+    try:
+        wb = load_workbook(path, read_only=True)
+        try:
+            return Counter(_row_key(row) for row in wb[_EXPORT_SHEET].iter_rows(values_only=True))
+        finally:
+            wb.close()
+    except Exception:  # noqa: BLE001  (damaged, locked or not a workbook: just counts as changed)
+        return None
+
+
+def _export(offers):
+    """Write offers whose LHT total and TPP differ by more than $1 to the yellow-highlighted export
+    workbook, replacing the last one. Returns (exported offer Ids in row order, unchanged), unchanged
+    being True when the new workbook has exactly the old one's rows (_export_rows).
     """
     export_path = os.path.join(_OUT_DIR, _EXPORT_FILENAME)
+    previous = _export_rows(export_path)
 
     # write_only mode streams rows instead of building an in-memory cell grid —
     # required here since a mismatched offer highlights all 5 cells in its row,
     # and normal openpyxl cell styling is far too slow at 100k+ styled rows.
     wb = Workbook(write_only=True)
-    ws = wb.create_sheet('Export Data')
+    ws = wb.create_sheet(_EXPORT_SHEET)
 
-    ws.append(['Offer ID', 'Total Purchase Price', 'LHT Price Total', 'Close Date', 'Status'])
+    ws.append(_EXPORT_HEADER)
+    rows = Counter([_row_key(_EXPORT_HEADER)])
 
     exported = []
     for offer_id, offer in offers.items():
@@ -165,11 +191,12 @@ def _export(offers):
             cell.fill = _YELLOW_FILL
             row.append(cell)
         ws.append(row)
+        rows[_row_key(values)] += 1
         exported.append(offer_id)
 
     wb.save(export_path)
     print(f'Data successfully exported to: {export_path}', flush=True)
-    return exported
+    return exported, rows == previous
 
 
 def _close_date_message(offers, exported):
@@ -210,35 +237,38 @@ def _closing_soon(offers, exported):
 def main(quiet=False):
     """Download both reports, merge offers with their LHT totals, export the mismatches,
     and show which exported offers have a Close Date (no message box when quiet, for Mirror).
-    Returns (offers, exported offer Ids)."""
+    Returns (offers, exported offer Ids, whether the export is unchanged from the last one)."""
     _download_files()
 
     offers = {}
     _process_offers(offers)
     _process_lht(offers)
-    exported = _export(offers)
+    exported, unchanged = _export(offers)
     if not quiet:
         _notify(_close_date_message(offers, exported))
-    return offers, exported
+    return offers, exported, unchanged
 
 
 def mirror_step():
     """Mirror's TPP-LHPP step: run quietly and return (result kind, report line) counting
     mismatches closing in the next two weeks, plus any whose Close Date couldn't be read (they
-    might be closing soon too)."""
-    soon, unreadable = _closing_soon(*main(quiet=True))
-    review = f': review {_EXPORT_FILENAME}'
+    might be closing soon too). Those make it Needs review, unless the export is unchanged from
+    the last run (No changes, with the same counts)."""
+    offers, exported, unchanged = main(quiet=True)
+    soon, unreadable = _closing_soon(offers, exported)
     odd = "Close Date Mirror couldn't read"
     if soon:
         line = f'{ark_common.plural(soon, "price mismatch", "price mismatches")} closing in the next two weeks'
         if unreadable:
             line += f', and {unreadable} with a {odd}'
-        return ark_common.REVIEW, line + review
-    if unreadable:
+    elif unreadable:
         have = 'has' if unreadable == 1 else 'have'
-        return ark_common.REVIEW, (f'No price mismatches closing in the next two weeks, but {unreadable} '
-                                   f'{have} a {odd}{review}')
-    return ark_common.NOTHING, 'No price mismatches closing in the next two weeks'
+        line = f'No price mismatches closing in the next two weeks, but {unreadable} {have} a {odd}'
+    else:
+        return ark_common.NOTHING, 'No price mismatches closing in the next two weeks'
+    if unchanged:
+        return ark_common.NOTHING, f'{_EXPORT_FILENAME} unchanged since the last run ({line})'
+    return ark_common.REVIEW, f'{line}: review {_EXPORT_FILENAME}'
 
 
 if __name__ == '__main__':

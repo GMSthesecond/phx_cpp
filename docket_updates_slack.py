@@ -1,9 +1,10 @@
-"""Docket Updates Slack, launched by the "Docket Updates Slack" button (bottom of column 1). This is
-the Slack version of Docket Updates; since 2026-10-16 Docket Updates itself reads the Hearing Dockets
-workbook (docket_updates.py). Its files carry a Slack_ prefix so they don't clash with Docket Updates' in the same folder.
+"""Docket Updates Slack, launched by the "Docket Updates Slack" button (bottom of column 1) and run
+by Mirror as its last step (mirror_step). This is the Slack version of Docket Updates; Docket Updates
+Sheet (docket_updates.py) reads the Hearing Dockets workbook. Its files carry a Slack_ prefix so they
+don't clash with Docket Updates Sheet's in the same folder.
 
-Downloads every message Cheyanne Winn posted in the #docket-updates Slack channel (her posts
-and her thread replies) through the Slack Web API, using the user token in settings.ini
+Downloads the messages Cheyanne Winn posted in the #docket-updates Slack channel in the last _DAYS
+(7) days (her posts and her thread replies) through the Slack Web API, using the user token in settings.ini
 [SlackCredentials] token. Writes Parsed_Slack_Messages.csv (ID, Date, Time, Message, Reply To,
 Slack TS, Link), newest first, to [Folders] DocketUpdates (default: Desktop\\Docket Updates),
 replacing the last export. ID is the local send time plus Slack's
@@ -12,14 +13,16 @@ microseconds (YYYYMMDD-HHMMSS-ffffff), so it is unique per message.
 Then reads the board order cases out of those messages (the "Case <number> (<applicant>): <type>:
 <status>" lines, and the well count: the sum of the case's "(N Wells)" lines; sections and state headings
 are not read), downloads the RW cases report from Ark (Slack_RW_Case_Info.csv, same folder) and compares
-each case with its RW record(s): Case Status / Order Status and the well count (Number of Wells); Case
-Type and applicant are not compared. Writes Slack_Docket_Differences.xlsx (see _DIFF_HEADER): one row per
+each case with its RW record(s): Case Status / Order Status, the well count (Number of Wells) and, when
+Slack has a result, a Date Order Signed that is blank or earlier than the message's "Board Order Updates
+from" date (the post's date without one); Case Type and applicant are not compared. Writes Slack_Docket_Differences.xlsx (see _DIFF_HEADER): one row per
 RW record that differs, with its RW Case Notes, the differing Slack and RW cells highlighted yellow;
 matches and cases missing from RW are left out. Writes Slack_Docket_Upload.csv (see _upload_row): a
 best-guess Cases Update for the Data Loader with a row per differing RW record whose case has no
 sub-cases (those are left to review by hand); it is NOT uploaded. Writes Slack_Not_In_RW.csv: the Slack side of every case missing from RW (case number, applicant, type, status
-in RW's Case Status / Order Status terms, well count). Shows a message box with both counts when done. Read-only: nothing is posted to Slack
-or uploaded to Ark.
+in RW's Case Status / Order Status terms, Number of Wells). Shows a message box with both counts when done
+(not in Mirror, which gets one report line instead). Read-only: nothing is posted to Slack or uploaded to Ark.
+When a run fails, its error box (or Mirror's report line) warns that the files may be from an earlier run.
 """
 import csv
 import json
@@ -44,6 +47,7 @@ _CHANNEL_ID = 'C0881BBSFU4'  # Slack id of #docket-updates (survives a channel r
 _USER_ID = 'U07RLNF4F44'     # Slack id of Cheyanne Winn
 _WORKSPACE_URL = 'https://phxenergy.slack.com'  # base of the message links in the Link column
 _API_URL = 'https://slack.com/api/'  # Slack Web API base
+_DAYS = 7  # days of messages downloaded and compared, counted back from the run as _DAYS x 24 hours; older posts aren't read
 _PAGE_SIZE = 200  # messages per history / replies request (Slack's recommended page size)
 _MAX_RETRIES = 5  # times one request is retried after Slack rate-limits it (HTTP 429)
 _KEPT_SUBTYPES = {None, 'thread_broadcast', 'file_share', 'me_message'}  # message kinds exported; joins, topic changes etc. are skipped
@@ -63,28 +67,32 @@ _REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=d240bce207ca4cac3da
 _REPORT_FILE = 'Slack_RW_Case_Info.csv'  # saved name of the RW cases report (overwritten each run)
 _RW_WELLS = 'Number of Wells'  # RW report column with a record's well count (found ignoring case)
 _RW_CASE_NOTES = 'Case Notes'  # RW report column with a record's notes, shown but never compared (found ignoring case)
-_RW_DATE_SIGNED = 'Date Order Signed'  # RW report column read for the upload, which only ever moves it forward
-_OPTIONAL_RW = ('Order Status', _RW_WELLS)  # RW report columns compared only when the report has them
+_RW_DATE_SIGNED = 'Date Order Signed'  # RW report column: blank differs when Slack has a result; the upload only ever moves it forward
+_OPTIONAL_RW = ('Order Status', _RW_WELLS, _RW_DATE_SIGNED)  # RW report columns compared only when the report has them
 _UPLOAD_FILE = 'Slack_Docket_Upload.csv'  # best-guess Cases Update for the Data Loader; not uploaded (overwritten each run)
 _UPLOAD_HEADER = ['Record Id', 'Case Status', 'Order Status', _RW_WELLS, _RW_DATE_SIGNED,
                   _RW_CASE_NOTES]  # upload columns, named as in the RW report; one the report lacks is left out
 _DIFF_FILE = 'Slack_Docket_Differences.xlsx'  # workbook of the RW records that differ (overwritten each run)
 _DIFF_HEADER = ['Differences', 'Case Number', 'RW Case Number', 'Record Id', 'Posted', 'Slack Status',
-                'RW Case Status', 'RW Order Status', 'Slack Well Count', 'RW Well Count', 'RW Case Notes',
-                'Notes', 'Link']  # differences workbook columns
+                'RW Case Status', 'RW Order Status', 'Slack Well Count', 'RW Well Count', 'Slack Order Date',
+                'RW Date Order Signed', 'RW Case Notes', 'Notes', 'Link']  # differences workbook columns
 _HIGHLIGHT = {  # difference -> the differences workbook columns highlighted for it
     'Status': ('Slack Status', 'RW Case Status'),
     'Order Status': ('Slack Status', 'RW Order Status'),
     'Well Count': ('Slack Well Count', 'RW Well Count'),
+    'Date Order Signed': ('Slack Order Date', 'RW Date Order Signed'),
 }
 _YELLOW_FILL = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # highlight of a differing cell
 _MATCH, _DIFFERS, _NOT_IN_RW = 'Match', 'Differs', 'Not in RW'  # Result values
 _MISSING_FILE = 'Slack_Not_In_RW.csv'  # Slack side of every Not in RW row (overwritten each run)
 _MISSING_HEADER = ['Case Number', 'Applicant', 'Case Type', 'Case Status', 'Order Status',
-                   'Well Count']  # Slack_Not_In_RW.csv columns; statuses in RW's terms
+                   _RW_WELLS]  # Slack_Not_In_RW.csv columns, named as in RW; statuses in RW's terms
+_STALE_NOTE = (f'{_DIFF_FILE}, {_UPLOAD_FILE} and {_MISSING_FILE} may be from an earlier run: don\'t load '
+               f'{_UPLOAD_FILE} until Docket Updates Slack finishes without an error.')  # ending of every failure box
+_STALE_SHORT = f"{_UPLOAD_FILE} may be from an earlier run, don't load it"  # start of Mirror's failure line (short: Mirror keeps 200 characters)
 _SPACING_TYPES = ('Establish Spacing', 'Establish Overlapping Spacing', 'Establish Temporary Spacing',
                   'Establish Overlapping Temporary Spacing', 'Establish Permanent Spacing')  # RW types that count as spacing
-_TYPE_RULES = [  # (pattern on the uppercased Slack type, RW types it matches or None = no RW type); first hit wins. POOLING and SPACING in any order or joined any way count as Pooling and Spacing. Not compared with RW since 2026-10-27; _parse_header uses it to tell a type from a status
+_TYPE_RULES = [  # (pattern on the uppercased Slack type, RW types it matches or None = no RW type); first hit wins. POOLING and SPACING in any order or joined any way count as Pooling and Spacing. Not compared with RW since 2026-10-27 and not used by _parse_header since 2026-11-04; kept (_rw_types) as the Slack type -> RW Case Type mapping
     (re.compile(r'REDEFINE FIELD|BOARD ORDER BY LAW'), None),
     (re.compile(r'^(?=.*POOLING)(?=.*SPACING).*(AMENDMENT|RECONSIDERATION|EXCEPTION)'), _SPACING_TYPES + ('Increased Density',)),
     (re.compile(r'^(?=.*POOLING).*SPACING'), ('Pooling',) + _SPACING_TYPES),
@@ -95,18 +103,26 @@ _TYPE_RULES = [  # (pattern on the uppercased Slack type, RW types it matches or
     (re.compile(r'REVOKE'), ('Show Cause',)),
 ]
 _STATUS_RE = re.compile(r'PARTIALLY GRANTED|GRANTED|GARNTED|DISMISSED|DENIED')  # board results found in a status (GARNTED is a typo seen in Slack)
+_STATUS_START_RE = re.compile(r'(?:~\s*)?\b(?:PARTIALLY GRANTED|GRANTED|GARNTED|DISMISSED|DENIED)', re.I)  # where a status starts in "Pooling GRANTED" (no colon before it), struck-out text included
 _EXPECTED_STATUS = {  # Slack result -> (RW Case Status, RW Order Status) it should show
     'GRANTED': ('Ordered', 'Granted'),
     'PARTIALLY GRANTED': ('Ordered', 'Granted'),
     'DENIED': ('Ordered', 'Denied'),
     'DISMISSED': ('Dismissed', ''),
 }
+_ORDER_DATE_RE = re.compile(r'Board Order Updates?\s+from\s+(\d{1,2}/\d{1,2}/\d{2,4})', re.I)  # message heading giving the orders' date
 _HEADER_RE = re.compile(r'^Cases?\s*(\d[^(:]*)(.*)$', re.I)  # case header: number text, then (applicant): type: status
 _WELLS_RE = re.compile(r'^\(?\s*(\d+)[\s-]*WELLS?\b', re.I)  # "(4 Wells)" / "(5 Wells)-(CHEETAH UNIT)" line: a well group and its count
 
 
 class SlackError(Exception):
-    """Slack answered a request with ok: false (bad token, missing scope, ...)."""
+    """Slack answered a request with ok: false (bad token, missing scope, ...), or (quiet runs only)
+    settings.ini has no token."""
+
+
+class RunFailed(Exception):
+    """main() failed: the original error (its cause) plus the warning that the comparison files may be
+    from an earlier run (_STALE_NOTE; _STALE_SHORT first for Mirror)."""
 
 
 def _notify(message, flags=0x40):
@@ -153,10 +169,12 @@ def _is_hers(msg):
     return msg.get('user') == _USER_ID and msg.get('subtype') in _KEPT_SUBTYPES
 
 
-def _fetch_messages(token):
-    """All of _USER_ID's messages in _CHANNEL_ID, posts and thread replies, keyed by Slack ts."""
+def _fetch_messages(token, oldest):
+    """_USER_ID's messages in _CHANNEL_ID sent after oldest (a Slack ts), posts and their thread
+    replies, keyed by Slack ts. Only threads started after oldest are opened, so a reply to an
+    older post isn't found."""
     found = {}
-    for msg in _paged('conversations.history', token, {'channel': _CHANNEL_ID}):
+    for msg in _paged('conversations.history', token, {'channel': _CHANNEL_ID, 'oldest': oldest}):
         if _is_hers(msg):
             found[msg['ts']] = msg
         if msg.get('reply_count'):
@@ -231,7 +249,8 @@ def _rw_types(slack_type):
 
 def _parse_header(line):
     """Fields of a case header line ("Case 32275 (CONTINENTAL RESOURCES, INC): Pooling: GRANTED"), or
-    None if the line isn't one. Copes with missing colons, nested parentheses in the applicant, extra
+    None if the line isn't one. Copes with missing colons (also the one before the status: "Pooling
+    GRANTED" splits at the first result word, _STATUS_START_RE), nested parentheses in the applicant, extra
     parenthesized notes before it, several numbers ("196-2025 / 32-2025 FED") and messy statuses.
     status_text is the status as written, so an unrecognized one ("CONTINUED") isn't taken as blank."""
     m = _HEADER_RE.match(line)
@@ -256,8 +275,9 @@ def _parse_header(line):
     parts = [p for p in parts if p]
     type_text = parts[0] if parts else ''
     status_text = parts[-1] if len(parts) > 1 else ''
-    if len(parts) == 1 and _status(parts[0]) and not _rw_types(parts[0]):  # "Case 1 (X): GRANTED"
-        type_text, status_text = '', parts[0]
+    start = _STATUS_START_RE.search(type_text) if len(parts) == 1 else None
+    if start:  # no colon before the status: "Pooling GRANTED", or only "GRANTED"
+        type_text, status_text = type_text[:start.start()].strip(' -'), type_text[start.start():].strip()
     notes = [f'Status text: {status_text}'] if status_text.upper() not in ('', _status(status_text)) else []
     return {'number': number, 'numbers': re.findall(r'\d+(?:-\d+)*', number),
             'applicant': groups[-1] if groups else '', 'type': type_text, 'status': _status(status_text),
@@ -287,6 +307,16 @@ def _parse_message(text):
     return cases
 
 
+def _order_date(text, posted):
+    """Date of a message's orders, MM/DD/YYYY: the "Board Order Updates from 11/2/2026" heading's date,
+    or posted (the message's own date) when it has no readable heading."""
+    m = _ORDER_DATE_RE.search((text or '').replace('*', ''))
+    try:
+        return ark_common.parse_date(m[1]).strftime('%m/%d/%Y') if m else posted
+    except ValueError:
+        return posted
+
+
 def _has_info(post):
     """True when a post of a case says more than its number: a status (also one not recognized),
     type, applicant or well count. A bare mention like "Case 32384 was corrected" has none of them."""
@@ -313,7 +343,8 @@ def _fill_blanks(case, older):
 
 
 def _cases_from(rows):
-    """Cases from the export rows (newest first), each with posted (date) and link added. Posts that
+    """Cases from the export rows (newest first), each with posted (date), order_date (_order_date) and
+    link added. Posts that
     share any case number are one case ("196-2025" and "196-2025 / 32-2025 FED"), taken from the newest
     post that says more than the number (_has_info), so a bare later mention ("Case 32384 was
     corrected") doesn't replace it. Fields it leaves blank come from the newest older post that has
@@ -321,8 +352,9 @@ def _cases_from(rows):
     which post it came from, and every number posted is looked up in RW."""
     posts_by_case, by_number = [], {}
     for row in rows:
+        order_date = _order_date(row[3], row[1])
         for case in _parse_message(row[3]):
-            case.update(posted=row[1], link=row[6], msg_id=row[0])
+            case.update(posted=row[1], order_date=order_date, link=row[6], msg_id=row[0])
             posts = next((by_number[n] for n in case['numbers'] if n in by_number), None)
             if posts is None:
                 posts = []
@@ -403,10 +435,11 @@ def _candidates(case, index):
 
 
 def _differences(case, rec, columns, rw_wells=None):
-    """Fields where an RW record disagrees with the Slack case: Status (Case Status), Order Status and
-    Well Count. Order Status and Well Count only when the report has the column (columns); Well Count
-    only when Slack gives one, against rw_wells (the case's RW total, see _compare). Type and applicant
-    aren't compared."""
+    """Fields where an RW record disagrees with the Slack case: Status (Case Status), Order Status,
+    Well Count and Date Order Signed. All but Status only when the report has the column (columns);
+    Well Count only when Slack gives one, against rw_wells (the case's RW total, see _compare); Date
+    Order Signed when Slack has a result (DISMISSED too) and RW's is blank or earlier than the case's
+    order_date (an unreadable one isn't a difference). Type and applicant aren't compared."""
     diffs = []
     expected = _EXPECTED_STATUS.get(case['status'])
     if expected:
@@ -416,15 +449,22 @@ def _differences(case, rec, columns, rw_wells=None):
             diffs.append('Order Status')
     if case['wells'] is not None and _RW_WELLS in columns and rw_wells != case['wells']:
         diffs.append('Well Count')
+    if expected and _RW_DATE_SIGNED in columns:
+        have = rec.get(_RW_DATE_SIGNED, '')
+        signed = _rw_date(have)
+        if not have or (signed and signed < ark_common.parse_date(case['order_date'])):
+            diffs.append('Date Order Signed')
     return diffs
 
 
 def _rw_fields(rec):
-    """RW-side columns of a comparison row (a readable well count as a number; Case Notes as given)."""
+    """RW-side columns of a comparison row (a readable well count as a number; Date Order Signed and
+    Case Notes as given)."""
     wells = rec.get(_RW_WELLS, '')
     return {'RW Case Number': rec.get('Case Number', ''), 'Record Id': rec.get('Record Id', ''),
             'RW Case Status': rec.get('Case Status', ''), 'RW Order Status': rec.get('Order Status', ''),
             'RW Well Count': wells if _well_number(wells) is None else _well_number(wells),
+            'RW Date Order Signed': rec.get(_RW_DATE_SIGNED, ''),
             'RW Case Notes': rec.get(_RW_CASE_NOTES, '')}
 
 
@@ -440,9 +480,10 @@ def _upload_row(case, rec, columns):
     - Case Status / Order Status: from Slack's result (_EXPECTED_STATUS); DISMISSED writes a blank
       Order Status on purpose, to clear it.
     - Number of Wells: Slack's well count.
-    - Date Order Signed: when Slack has a result, the date of the post the case was taken from, but
-      only when that is later than RW's (never moved back; an RW date that can't be read is kept and
-      noted). A readable date is written MM/DD/YYYY.
+    - Date Order Signed: when Slack has a result, the order_date of the post the case was taken from
+      (its "Board Order Updates from" heading, else the post's date), but only when that is later than
+      RW's (never moved back; an RW date that can't be read is kept and noted). A readable date is
+      written MM/DD/YYYY.
     - Case Notes: that post's link, a space, then RW's notes; left as they are when they already have it."""
     values, notes = dict(rec), []
     expected = _EXPECTED_STATUS.get(case['status'])
@@ -451,8 +492,8 @@ def _upload_row(case, rec, columns):
     if have and signed is None:
         notes.append(f'RW {_RW_DATE_SIGNED} "{have}" not read as a date: kept in the upload')
     elif expected:
-        posted = ark_common.parse_date(case['posted'])
-        signed = max(signed or posted, posted)
+        ordered = ark_common.parse_date(case['order_date'])
+        signed = max(signed or ordered, ordered)
     if expected:
         values['Case Status'], values['Order Status'] = expected
     if signed:
@@ -500,7 +541,7 @@ def _compare(cases, rw, columns):
         slack = {'Case Number': case['number'], 'Posted': case['posted'], 'Slack Applicant': case['applicant'],
                  'Slack Type': case['type'], 'Slack Status': case['status'],
                  'Slack Well Count': '' if case['wells'] is None else case['wells'],
-                 'Link': case['link'], 'Upload': None}
+                 'Slack Order Date': case['order_date'], 'Link': case['link'], 'Upload': None}
         for rec in candidates:
             diffs = _differences(case, rec, columns, rw_wells)
             row_notes = list(notes)
@@ -558,10 +599,12 @@ def _missing_rows(results):
 
 
 def _summary(rows, out_path):
-    """Text of the finish message box about the Slack export: count, date range and where it went."""
+    """Text of the finish message box about the Slack export: count, the _DAYS window, date range and
+    where it went."""
     if not rows:
-        return f'No messages from Cheyanne Winn found in #docket-updates.\n\nSaved an empty export: {out_path}'
-    return (f'Saved {len(rows)} message(s) from Cheyanne Winn in #docket-updates, '
+        return (f'No messages from Cheyanne Winn found in #docket-updates in the last {_DAYS} days.\n\n'
+                f'Saved an empty export: {out_path}')
+    return (f'Saved {len(rows)} message(s) from Cheyanne Winn in #docket-updates in the last {_DAYS} days, '
             f'{rows[-1][1]} to {rows[0][1]}.\n\nSaved: {out_path}')
 
 
@@ -587,18 +630,35 @@ def _compare_summary(case_count, rw_count, results, counts, columns, paths):
     return text + '\n\nDifferences: {}\nUpload file: {}\nNot in RW list: {}'.format(*paths)
 
 
-def main():
-    """Read the token, download the messages and write their CSV, then (when they hold any cases)
-    download the RW report, compare, write the differences workbook, upload CSV and Not in RW CSV, and
-    show the summary. Nothing is uploaded. A missing token, a Slack error or a file locked by Excel gets
-    its own message box."""
+def main(now=None, quiet=False):
+    """Run the button (_run). Any error is raised again as RunFailed with the warning that the comparison
+    files may be from an earlier run: _STALE_NOTE after the error for run_button's box, or (quiet) one
+    line starting with _STALE_SHORT for Mirror's report."""
+    try:
+        return _run(now, quiet)
+    except Exception as e:
+        if quiet:
+            first = (str(e).strip().splitlines() or [''])[0]
+            raise RunFailed(f'{_STALE_SHORT}. {type(e).__name__}: {first}'.rstrip(': ')) from e
+        raise RunFailed(f'{e}\n\n{_STALE_NOTE}') from e
+
+
+def _run(now, quiet):
+    """Read the token, download the last _DAYS days of messages and write their CSV, then (when they
+    hold any cases) download the RW report, compare, write the differences workbook, upload CSV and Not
+    in RW CSV, and show the summary. Nothing is uploaded. A missing token, a Slack error or a file locked
+    by Excel gets its own message box ending in _STALE_NOTE; when quiet (Mirror) there are no boxes and
+    those raise instead. now (for tests) is where the _DAYS window ends. Returns (cases, differing RW
+    records, upload rows, cases not in RW), or None after a box about a problem."""
     try:
         token = ark_common.read_slack_token().strip()
     except KeyError:
         token = ''
     if not token:
-        _notify(_NO_TOKEN_HELP, 0x30)
-        return
+        if quiet:
+            raise SlackError(_NO_TOKEN_HELP)
+        _notify(f'{_NO_TOKEN_HELP}\n\n{_STALE_NOTE}', 0x30)
+        return None
 
     out_dir = ark_common.read_folder('DocketUpdates', _DEFAULT_DIR)
     os.makedirs(out_dir, exist_ok=True)
@@ -606,12 +666,16 @@ def main():
     diff_path = os.path.join(out_dir, _DIFF_FILE)
     upload_path = os.path.join(out_dir, _UPLOAD_FILE)
     missing_path = os.path.join(out_dir, _MISSING_FILE)
+    # _DAYS x 24 hours in Unix time: 7 local days back would be an hour off across a clock change
+    oldest = (now or datetime.now()).timestamp() - _DAYS * 86400
 
     try:
-        rows = _rows(_fetch_messages(token).values())
+        rows = _rows(_fetch_messages(token, f'{oldest:.6f}').values())
     except SlackError as e:
-        _notify(f'{e}\n\nCheck the token in settings.ini [SlackCredentials].', 0x10)
-        return
+        if quiet:
+            raise
+        _notify(f'{e}\n\nCheck the token in settings.ini [SlackCredentials].\n\n{_STALE_NOTE}', 0x10)
+        return None
     try:
         _write_csv(out_path, _OUTPUT_HEADER, rows)
         cases = _cases_from(rows)
@@ -626,11 +690,33 @@ def main():
         _write_csv(upload_path, _upload_columns(columns), [r['Upload'] for r in results if r['Upload']])
         _write_csv(missing_path, _MISSING_HEADER, _missing_rows(results))
     except PermissionError as e:
-        _notify(f'Could not write {e.filename or out_path}.\n\nClose it in Excel and click Docket Updates Slack again.',
-                0x10)
-        return
-    _notify(_summary(rows, out_path) + '\n\n' +
-            _compare_summary(len(cases), len(rw), results, counts, columns, (diff_path, upload_path, missing_path)))
+        if quiet:
+            raise
+        _notify(f'Could not write {e.filename or out_path}.\n\nClose it in Excel and click Docket Updates Slack again.'
+                f'\n\n{_STALE_NOTE}', 0x10)
+        return None
+    if not quiet:
+        _notify(_summary(rows, out_path) + '\n\n' +
+                _compare_summary(len(cases), len(rw), results, counts, columns, (diff_path, upload_path, missing_path)))
+    return len(cases), counts[_DIFFERS], sum(1 for r in results if r['Upload']), counts[_NOT_IN_RW]
+
+
+def mirror_step():
+    """Mirror's Docket Updates Slack step: run quietly and return (result kind, report line). REVIEW
+    when an RW record differs or a case isn't in RW, naming the files to look at; nothing is uploaded."""
+    cases, differ, uploads, missing = main(quiet=True)
+    if not cases:
+        return ark_common.NOTHING, f'No board order cases in the last {_DAYS} days'
+    if not differ and not missing:
+        return ark_common.NOTHING, f'No differences in {ark_common.plural(cases, "case")} from the last {_DAYS} days'
+    parts, files = [], []
+    if differ:
+        parts.append(f'{ark_common.plural(differ, "RW record")} to fix ({uploads} in {_UPLOAD_FILE}, not uploaded)')
+        files.append(_DIFF_FILE)
+    if missing:
+        parts.append(f'{ark_common.plural(missing, "case")} not in RW')
+        files.append(_MISSING_FILE)
+    return ark_common.REVIEW, f'{", ".join(parts)}: review {" and ".join(files)}'
 
 
 if __name__ == '__main__':

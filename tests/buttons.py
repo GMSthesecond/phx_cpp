@@ -36,17 +36,19 @@ BUTTONS = [
                                'doc_inventory_divide.py'], ['test_index.py']),
     Button('Cases Unit Names', SCRIPT, ['case_unit_names.py'], ['test_case_unit_names.py']),
     Button('STR', SCRIPT, ['str_verification.py'], ['test_str_verification.py']),
+    # Same script, AOI check only; also Mirror's last step (its line ends the report)
+    Button('AOI', SCRIPT, ['str_verification.py', '--aoi'], ['test_str_verification.py', 'test_mirror.py']),
     Button('TPP-LHPP', SCRIPT, ['tpp_lhpp.py'], ['test_tpp_lhpp.py']),
     Button('C2E', SCRIPT, ['cost_to_extend.py'], ['test_cost_to_extend.py']),
-    Button('Docket Updates', SCRIPT, ['docket_updates.py'], ['test_docket_updates.py']),
     Button('SIB', SCRIPT, ['section_id_blank.py'], ['test_section_id_blank.py']),
-    # The Slack version of Docket Updates (#docket-updates messages vs RW)
+    # Hearing Dockets workbook vs RW
+    Button('Docket Updates Sheet', SCRIPT, ['docket_updates.py'], ['test_docket_updates.py']),
+    # The Slack version (#docket-updates messages vs RW); also a Mirror step
     Button('Docket Updates Slack', SCRIPT, ['docket_updates_slack.py'], ['test_docket_updates_slack.py']),
     # Bottom-left corner
     Button('Settings', DIALOG, 'SettingsWindow', ['test_cpp.py']),
     # Column 2
     Button('PPIQ', SCRIPT, ['ppiq.py'], ['test_ppiq.py']),
-    Button('AOI', SCRIPT, ['str_verification.py', '--aoi'], ['test_str_verification.py']),
     Button('NAI', SCRIPT, ['nai_download.py'], ['test_nai_download.py']),
     Button('Organization', INLINE, 'RunOrganize', ['test_cpp.py']),
     # Column 3
@@ -54,6 +56,9 @@ BUTTONS = [
     Button('Bring out your dead', SCRIPT, ['deceased.py'], ['test_deceased.py']),
     Button('Rename', DIALOG, 'RenameDlg', ['test_cpp.py']),
     Button('Maps', SEQUENCE, ['map_builder.py', 'map_uploader.py'], ['test_map.py']),
+    # Opens the link window (two Ark account links); Continue with valid links runs merge.py <id> <id>
+    # (test_app_buttons.py checks that part)
+    Button('Merge', DIALOG, 'MergeDlg', ['test_merge.py', 'test_cpp.py', 'test_app_buttons.py']),
     # Column 4 (QQ works; the rest are not implemented yet)
     Button('ELMI', TODO),
     Button('HBPNW', TODO),
@@ -69,10 +74,10 @@ BUTTONS = [
 # Main-window columns left to right, each listed top to bottom (Mirror and Settings sit outside them;
 # HIDDEN buttons aren't shown, so they aren't listed)
 COLUMNS = [
-    ['Close Date', 'Case Update', 'Index', 'Cases Unit Names', 'STR', 'TPP-LHPP',
-     'C2E', 'Docket Updates', 'SIB', 'Docket Updates Slack'],
-    ['PPIQ', 'AOI', 'NAI', 'Organization'],
-    ['Unit Connect to Cases', 'Bring out your dead', 'Rename', 'Maps'],
+    ['Close Date', 'Case Update', 'Index', 'Cases Unit Names', 'STR', 'AOI', 'TPP-LHPP',
+     'C2E', 'SIB', 'Docket Updates Sheet', 'Docket Updates Slack'],
+    ['PPIQ', 'NAI', 'Organization'],
+    ['Unit Connect to Cases', 'Bring out your dead', 'Rename', 'Maps', 'Merge'],
     ['ELMI', 'HBPNW', 'LE', 'LHP', 'NHBPW', 'UNLE', 'SL', 'HBP Wells', 'QQ'],
 ]
 COLUMN_HEADERS = ['Daily', 'Set Date', 'As Needed', 'In Progress']  # label above each of COLUMNS

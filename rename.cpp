@@ -463,8 +463,17 @@ static bool g_renameDone = false;
 // Window class name for the rename dialog.
 static const wchar_t RENAME_CLS[] = L"RenameDlg";
 
+// Closes the rename dialog: ends OpenRename's loop and re-enables the launcher BEFORE destroying
+// the window, since Windows gives the focus back to an owner only if it's enabled as its popup goes
+// (otherwise another app's window comes to the front).
+static void CloseRenameWindow(HWND hwnd) {
+    g_renameDone = true;
+    EnableWindow(GetWindow(hwnd, GW_OWNER), TRUE);
+    DestroyWindow(hwnd);
+}
+
 // Window proc for the rename dialog: instruction text plus Generate (GenerateCSV),
-// Apply (ApplyRenames), and Close buttons. Close/WM_CLOSE sets g_renameDone and destroys.
+// Apply (ApplyRenames), and Close buttons. Close/WM_CLOSE go through CloseRenameWindow.
 static LRESULT CALLBACK RenameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
@@ -494,13 +503,11 @@ static LRESULT CALLBACK RenameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (LOWORD(wp) == ID_RN_APPLY) {
             ApplyRenames(hwnd);
         } else if (LOWORD(wp) == ID_RN_CLOSE) {
-            g_renameDone = true;
-            DestroyWindow(hwnd);
+            CloseRenameWindow(hwnd);
         }
         return 0;
     case WM_CLOSE:
-        g_renameDone = true;
-        DestroyWindow(hwnd);
+        CloseRenameWindow(hwnd);
         return 0;
     }
     return DefWindowProc(hwnd, msg, wp, lp);

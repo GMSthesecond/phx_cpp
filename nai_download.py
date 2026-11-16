@@ -1,7 +1,7 @@
 """Newly Acquired Interest (NAI) download, launched by the "NAI" button (named DMD before 2026-10-28).
 
 Logs in to ark.phoenixenergy.com with Playwright and downloads the two NAI reports into the
-[Folders] NewlyAcquiredInterest folder (settings.ini; falls back to the old DataMeetingDownload key),
+[Folders] NewlyAcquiredInterest folder (settings.ini; default Desktop\\NAI),
 saving each as <name>.MM.DD.YYYY.csv, then shows a box saying where. On error shows an error box
 (log: nai_download_error.log in the folder). Uses ark_common for credentials, login,
 session.json and downloads.
@@ -19,9 +19,9 @@ _REPORT_URLS = [
 
 
 def _out_dir():
-    """The output folder: [Folders] NewlyAcquiredInterest, else the old DataMeetingDownload key
-    (set before the rename), else _DEFAULT_DIR."""
-    return ark_common.read_folder('NewlyAcquiredInterest', _DEFAULT_DIR, old_key='DataMeetingDownload')
+    """The output folder: [Folders] NewlyAcquiredInterest, else _DEFAULT_DIR. The pre-rename
+    DataMeetingDownload key is deliberately ignored: it points at the old DMD folder."""
+    return ark_common.read_folder('NewlyAcquiredInterest', _DEFAULT_DIR)
 
 
 def _trigger_and_save(page, out_dir, report_url):

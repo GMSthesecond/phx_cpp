@@ -5,7 +5,6 @@ Each county runs against a temp folder tree, the [Folders] Index folder (temp, v
 fixture) and a temp copy of the index workbook. Also checks the stdout tags main.cpp's progress bar
 and summary depend on, and the readable stops (workbook missing or open in Excel).
 """
-import ctypes
 import dataclasses
 import re
 import runpy
@@ -20,7 +19,7 @@ import doc_inventory_divide
 import doc_inventory_richland
 import doc_inventory_roosevelt
 from conftest import REPO, SANDBOX
-from fakes import read_csv
+from fakes import locked_like_excel, read_csv
 
 COUNTY_SCRIPTS = [doc_inventory_roosevelt, doc_inventory_richland, doc_inventory_divide]  # Index runs these in order
 
@@ -168,29 +167,11 @@ def test_missing_workbook_stops_with_a_readable_message(county, monkeypatch):
     assert 'Excel file not found' in str(stop.value) and 'gone.xlsx' in str(stop.value)
 
 
-def _lock_like_excel(path):
-    """Opens path the way Excel holds an open workbook: others may read it but not write it.
-    Returns (kernel32, handle) to close."""
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel32.CreateFileW.restype = ctypes.c_void_p
-    kernel32.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
-                                     ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL
-    handle = kernel32.CreateFileW(str(path), 0xC0000000, 1, None, 3, 0x80, None)
-    assert handle not in (None, ctypes.c_void_p(-1).value), 'could not lock the test workbook'
-    return kernel32, handle
-
-
 def test_workbook_open_in_excel_stops_before_the_scan(county, capsys):
     """If Excel has the workbook open, the county stops at once with "close it" (no CSV written, no
     half-finished run), instead of failing to save after the long scan."""
-    kernel32, handle = _lock_like_excel(county.excel)
-    try:
-        with pytest.raises(SystemExit) as stop:
-            county.mod.main()
-    finally:
-        kernel32.CloseHandle(handle)
+    with locked_like_excel(county.excel), pytest.raises(SystemExit) as stop:
+        county.mod.main()
     assert 'Close Index of Scanned Docs.xlsx in Excel' in str(stop.value)
     assert not county.csv.exists()
 

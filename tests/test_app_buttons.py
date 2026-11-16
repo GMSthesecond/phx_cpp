@@ -68,7 +68,10 @@ _MIRROR_REPORT_OPEN = 'mirror_report_open'  # written by the stand-in while it "
 _MIRROR_SAW_STOP = 'mirror_saw_stop'  # written by the stand-in when it finds its stop file
 _INDEX_COUNTS = {'doc_inventory_roosevelt.py': 3, 'doc_inventory_richland.py': 4, 'doc_inventory_divide.py': 5}
 _MIRROR_STEPS = [step.name for step in mirror.STEPS]  # buttons Mirror runs (drawn green)
-_LOCKED_DURING_MIRROR = ['PPIQ', 'AOI', 'NAI']  # also share the Ark login, so locked too
+_LOCKED_DURING_MIRROR = ['PPIQ', 'NAI', 'Merge']  # also share the Ark login, so locked too
+_WM_SETTEXT = 0x000C
+_ID_MG_FIRST, _ID_MG_SECOND, _ID_MG_ERROR = 701, 702, 703  # Merge window's link boxes and error line (merge.cpp)
+_MERGE_ID_1, _MERGE_ID_2 = '298bf830230991db2c6679eb', '2176a2baecb3919109798abe'  # the Dummy 1 / Dummy 2 test accounts
 
 # Stand-in for every launched script: records its name and arguments to calls.jsonl next to it.
 # The Index stand-ins also print progress tags the way the real scripts do (tag mid-line after \r),
@@ -390,6 +393,60 @@ def test_dialog_button_opens_its_window(running_app, label):
     _user32.PostMessageW(dialog, _WM_CLOSE, 0, 0)
     _wait_for(lambda: not _user32.IsWindow(dialog) and _user32.IsWindowEnabled(app.main), 5,
               f'{label} to close and the main window to be enabled')
+    assert app.calls() == []
+
+
+def _fill_merge_window(dialog, first, second):
+    """Types first / second into the Merge window's link boxes and presses Continue."""
+    for control, text in ((_ID_MG_FIRST, first), (_ID_MG_SECOND, second)):
+        buf = ctypes.create_unicode_buffer(text)
+        _user32.SendMessageW(_user32.GetDlgItem(dialog, control), _WM_SETTEXT, 0, ctypes.addressof(buf))
+    _user32.PostMessageW(_user32.GetDlgItem(dialog, _IDOK), _BM_CLICK, 0, 0)
+
+
+def _dlg_text(dialog, control):
+    """Text of a control in a dialog."""
+    buf = ctypes.create_unicode_buffer(512)
+    _user32.GetDlgItemTextW(dialog, control, buf, 512)
+    return buf.value
+
+
+def test_merge_launches_merge_py_with_both_accounts(running_app):
+    """Merge's window takes two pasted account links; Continue closes it and runs merge.py with
+    both record ids (lowercase, in the order typed)."""
+    app = running_app
+    app.click('Merge')
+    dialog = _wait_for(lambda: app.popup('MergeDlg'), 5, 'the Merge window')
+    _fill_merge_window(dialog, f'  https://ark.phoenixenergy.com/accounts?recordId={_MERGE_ID_2.upper()}\r\n',
+                       f'https://ark.phoenixenergy.com/accounts?recordId={_MERGE_ID_1}')
+    _wait_for(lambda: not _user32.IsWindow(dialog) and _user32.IsWindowEnabled(app.main), 5,
+              'the Merge window to close')
+    _wait_for(lambda: app.calls(), 5, 'merge.py to run')
+    assert [(c['script'], c['args']) for c in app.calls()] == [('merge.py', [_MERGE_ID_2, _MERGE_ID_1])]
+
+
+@pytest.mark.parametrize('first, second, error', [
+    ('', f'https://ark.phoenixenergy.com/accounts?recordId={_MERGE_ID_2}',
+     'Account 1 is empty: paste a link to an Ark account.'),
+    (_MERGE_ID_1, f'https://ark.phoenixenergy.com/landholdings?recordId={_MERGE_ID_2}',
+     "Account 2 isn't a link to an Ark account (it should contain /accounts?recordId=)."),
+    (_MERGE_ID_1, f'https://ark.phoenixenergy.com/accounts?recordId={_MERGE_ID_1}',
+     "Both links are the same account: paste the other account's link in one box."),
+])
+def test_merge_keeps_its_window_open_on_bad_links(running_app, first, second, error):
+    """A missing, wrong or repeated link shows the reason in the window, which stays open, and
+    nothing runs; Cancel then closes it."""
+    app = running_app
+    app.click('Merge')
+    dialog = _wait_for(lambda: app.popup('MergeDlg'), 5, 'the Merge window')
+    _fill_merge_window(dialog, first, second)
+    _wait_for(lambda: _dlg_text(dialog, _ID_MG_ERROR), 5, 'the error line')
+    assert _dlg_text(dialog, _ID_MG_ERROR) == error
+    assert _user32.IsWindowVisible(dialog) and not _user32.IsWindowEnabled(app.main)
+    _user32.PostMessageW(_user32.GetDlgItem(dialog, 2), _BM_CLICK, 0, 0)  # 2 = IDCANCEL
+    _wait_for(lambda: not _user32.IsWindow(dialog) and _user32.IsWindowEnabled(app.main), 5,
+              'Cancel to close the Merge window')
+    time.sleep(0.3)
     assert app.calls() == []
 
 

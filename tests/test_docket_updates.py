@@ -1,4 +1,4 @@
-"""Docket Updates button (docket_updates.py): compares the ND and MT sheets of the Hearing Dockets
+"""Docket Updates Sheet button (docket_updates.py): compares the ND and MT sheets of the Hearing Dockets
 workbook with the RW cases report from Ark and writes the differences, a Cases Update file and the
 Phoenix cases missing from RW.
 
@@ -123,7 +123,7 @@ def test_missing_workbook_says_where_to_set_it(workbook, folders, fake_ark, msgb
     """No workbook at [Files] HearingDockets: an error box naming the path and the Settings row, no download."""
     du.main(today=_TODAY)
     [(title, text)] = msgboxes
-    assert title == 'Docket Updates' and str(workbook) in text and 'Settings' in text
+    assert title == 'Docket Updates Sheet' and str(workbook) in text and 'Settings' in text
     assert fake_ark.downloads == []
 
 
@@ -451,7 +451,7 @@ def test_writes_the_three_files_and_uploads_nothing(workbook, folders, fake_ark,
     assert read_csv(out / 'Not_In_RW.csv')[1][:3] == ['32', 'ND', 'Phoenix Operating LLC']
     assert (out / 'Docket_Upload.csv').read_bytes().startswith(b'\xef\xbb\xbf')
     [(title, text)] = msgboxes
-    assert title == 'Docket Updates'
+    assert title == 'Docket Updates Sheet'
     assert 'Compared 3 workbook case(s) (ND/MT) with 3 RW case(s): 1 match, 1 differ' in text
     assert '1 RW record to update. Nothing was uploaded' in text and 'Not compared' not in text
     assert str(out / 'Docket_Upload.csv') in text

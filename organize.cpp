@@ -165,9 +165,19 @@ static ClassifyParams* g_cp = nullptr;
 // Window class name for the classify dialog.
 static const wchar_t CLASSIFY_CLS[] = L"OrgClassifyDlg";
 
+// Closes the classify dialog with result (column index, or -1 to skip): ends ClassifyTx's loop and
+// re-enables the launcher BEFORE destroying the window, since Windows gives the focus back to an
+// owner only if it's enabled as its popup goes (otherwise another app's window comes to the front).
+static void CloseClassifyWindow(HWND hwnd, int result) {
+    g_cp->result = result;
+    g_cp->done   = true;
+    EnableWindow(GetWindow(hwnd, GW_OWNER), TRUE);
+    DestroyWindow(hwnd);
+}
+
 // Window proc for the classify dialog: shows date/description/amount, a snippet edit
 // box, a category combo (COLS + "Ignore"), Confirm and Skip. Confirm stores the combo
-// index and snippet in g_cp; Skip/close store -1. Either sets g_cp->done and destroys.
+// index and snippet in g_cp; Skip/close store -1. Either closes it with CloseClassifyWindow.
 static LRESULT CALLBACK ClassifyProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
@@ -216,20 +226,14 @@ static LRESULT CALLBACK ClassifyProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
                 // Capture whatever snippet text the user left in the edit field.
                 GetWindowText(GetDlgItem(hwnd, ID_CL_SNIPPET),
                     g_cp->snippet, ARRAYSIZE(g_cp->snippet));
-                g_cp->result = sel;
-                g_cp->done   = true;
-                DestroyWindow(hwnd);
+                CloseClassifyWindow(hwnd, sel);
             }
         } else if (LOWORD(wp) == ID_CL_SKIP) {
-            g_cp->result = -1;
-            g_cp->done   = true;
-            DestroyWindow(hwnd);
+            CloseClassifyWindow(hwnd, -1);
         }
         return 0;
     case WM_CLOSE:
-        g_cp->result = -1;
-        g_cp->done   = true;
-        DestroyWindow(hwnd);
+        CloseClassifyWindow(hwnd, -1);
         return 0;
     }
     return DefWindowProc(hwnd, msg, wp, lp);

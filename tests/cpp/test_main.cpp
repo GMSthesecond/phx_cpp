@@ -87,6 +87,50 @@ bool SawMessageBox(const std::wstring& needle) {
     return false;
 }
 
+// Owner of the popup OwnerEnabledWhenPopupCloses is watching.
+static HWND s_watchedOwner = NULL;
+// Whether s_watchedOwner was enabled when the watched popup got WM_DESTROY.
+static bool s_ownerEnabledAtDestroy = false;
+// The watched popup's own window proc, which WatchPopupProc passes every message on to.
+static WNDPROC s_popupProc = NULL;
+
+// Window proc put in front of the watched popup's: notes whether its owner is enabled at WM_DESTROY
+// (before the popup's own proc runs), then passes the message on.
+static LRESULT CALLBACK WatchPopupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_DESTROY) s_ownerEnabledAtDestroy = IsWindowEnabled(s_watchedOwner) != FALSE;
+    return CallWindowProc(s_popupProc, hwnd, msg, wp, lp);
+}
+
+// See win_fakes.h.
+bool OwnerEnabledWhenPopupCloses(const wchar_t* cls, void (*close)(HWND popup, HWND owner), void* createParam) {
+    static const wchar_t kOwnerCls[] = L"TestPopupOwner";
+    HINSTANCE hi = GetModuleHandle(NULL);
+    WNDCLASS wc = {};
+    wc.lpfnWndProc   = DefWindowProc;
+    wc.hInstance     = hi;
+    wc.lpszClassName = kOwnerCls;
+    RegisterClass(&wc);  // fails harmlessly once registered
+    HWND owner = CreateWindowEx(0, kOwnerCls, L"", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, hi, NULL);
+    EnableWindow(owner, FALSE);
+    HWND popup = owner ? CreateWindowEx(WS_EX_DLGMODALFRAME, cls, L"", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                        0, 0, 300, 200, owner, NULL, hi, createParam) : NULL;
+    bool enabled = false, closed = false;
+    if (popup) {
+        s_watchedOwner = owner;
+        s_ownerEnabledAtDestroy = false;
+        s_popupProc = (WNDPROC)SetWindowLongPtr(popup, GWLP_WNDPROC, (LONG_PTR)WatchPopupProc);
+        close(popup, owner);
+        enabled = s_ownerEnabledAtDestroy;
+        closed = !IsWindow(popup);
+        if (!closed) DestroyWindow(popup);
+    }
+    if (owner) DestroyWindow(owner);
+    UnregisterClass(cls, hi);
+    if (!popup) MiniFail(__FILE__, __LINE__, "OwnerEnabledWhenPopupCloses", "couldn't open the popup (class registered?)");
+    if (!closed) MiniFail(__FILE__, __LINE__, "OwnerEnabledWhenPopupCloses", "the popup is still open after close");
+    return enabled;
+}
+
 // Runs every registered test with a fresh sandbox and the fake recorders cleared.
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2) {

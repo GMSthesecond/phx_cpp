@@ -1,6 +1,6 @@
-"""C++ unit tests for the Organize, Rename and Settings buttons (sources in tests/cpp).
+"""C++ unit tests for the Organize, Rename, Settings, Mirror and Merge buttons (sources in tests/cpp).
 
-Compiles tests/cpp/*.cpp (which #include organize.cpp, rename.cpp and settings.cpp) into a
+Compiles tests/cpp/*.cpp (which #include organize.cpp, rename.cpp, settings.cpp, mirror.cpp and merge.cpp) into a
 temp folder, runs cpp_tests.exe once, and reports each C++ TEST as its own pytest item, so they
 show up individually in the VS Code Testing panel. KNOWN_BUG tests report as xfail.
 To add a C++ test, write a TEST(name) in tests/cpp/test_<file>.cpp; it is picked up automatically.

@@ -193,3 +193,10 @@ TEST(rename_tag_write_leaves_no_temp_file) {
     CHECK_EQ(ReadMp3Artist(In(L"song.mp3")), std::wstring(L"New"));
     CHECK(!FileExists(In(L"song.mp3") + TEMP_SUFFIX));
 }
+
+TEST(rename_window_reenables_the_launcher_before_it_closes) {
+    RegisterRenameClass(GetModuleHandle(NULL));
+    CHECK(OwnerEnabledWhenPopupCloses(RENAME_CLS, [](HWND popup, HWND) { SendMessage(popup, WM_COMMAND, ID_RN_CLOSE, 0); }));
+    RegisterRenameClass(GetModuleHandle(NULL));
+    CHECK(OwnerEnabledWhenPopupCloses(RENAME_CLS, [](HWND popup, HWND) { SendMessage(popup, WM_CLOSE, 0, 0); }));
+}

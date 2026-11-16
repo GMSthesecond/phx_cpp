@@ -52,3 +52,15 @@ std::string Utf8(const std::wstring& s);
 std::wstring FromUtf8(const std::string& s);
 // True if any recorded MessageBox text contains needle.
 bool SawMessageBox(const std::wstring& needle);
+
+// ─── Popup window helper ─────────────────────────────────────────────────────
+
+// Opens a hidden popup of window class cls (registered by the caller; createParam goes to its
+// WM_CREATE), owned by a hidden owner window that is disabled, as the launcher is while a popup is
+// open; calls close(popup, owner); returns whether the owner was enabled again by the time the
+// popup got WM_DESTROY. It must be: Windows gives the focus back to the owner only if it's enabled
+// as the popup goes, otherwise another app's window comes to the front. Fails the test if close
+// leaves the popup open. Unregisters cls afterwards (Organize's tests rely on its dialog class
+// not being registered).
+bool OwnerEnabledWhenPopupCloses(const wchar_t* cls, void (*close)(HWND popup, HWND owner),
+                                 void* createParam = nullptr);

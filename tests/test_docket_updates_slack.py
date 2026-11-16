@@ -4,11 +4,13 @@ them with the RW cases report from Ark.
 
 main() runs for real against a fake Slack Web API (FakeSlack replaces the script's urlopen),
 so paging, thread replies, rate-limit retries and Slack errors are exercised without a network.
+run() fixes the end of the 7-day window at NOW, so the messages' dates are in late September 2026.
 When the messages hold cases, the RW report comes from the fake Ark (fake_ark fixture).
 The CSVs and the finish message box are checked. The case parser and the comparison are also
 tested directly on message text and small RW reports.
 """
 import json
+import time
 from datetime import datetime
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
@@ -22,6 +24,7 @@ from fakes import read_csv, write_csv
 
 _OTHER_USER = 'U0OTHERUSR'  # someone else posting in the channel
 _RW_HEADER = ['Record Id', 'Applicant', 'Case Number', 'Case Status', 'Case Type', 'Sections']  # columns of the RW report
+NOW = datetime(2026, 10, 3)  # the runs' "now": messages after 9/26/2026 00:00 are in the 7-day window
 
 
 def ts(year, month, day, hour, minute, second, micro='000100'):
@@ -55,9 +58,10 @@ class _Response:
 
 
 class FakeSlack:
-    """Fake Slack Web API installed over docket_updates_slack.urlopen. Serves history (newest first)
-    and replies (thread ts -> [parent, replies...]) in pages of the request's limit, and records
-    every request as (method, params, Authorization header)."""
+    """Fake Slack Web API installed over docket_updates_slack.urlopen. Serves history (newest first,
+    only messages after the request's oldest, as Slack does) and replies (thread ts -> [parent,
+    replies...]) in pages of the request's limit, and records every request as (method, params,
+    Authorization header)."""
 
     def __init__(self, history=(), replies=None):
         """history: channel messages, newest first; replies: {thread ts: [parent, reply, ...]}."""
@@ -80,6 +84,8 @@ class FakeSlack:
             return _Response(dict(ok=False, **self.error))
         assert params['channel'] == du._CHANNEL_ID
         items = self.history if method == 'conversations.history' else self.replies[params['ts']]
+        if method == 'conversations.history' and 'oldest' in params:
+            items = [m for m in items if float(m['ts']) > float(params['oldest'])]
         start = int(params.get('cursor', 0))
         end = start + int(params['limit'])
         body = {'ok': True, 'messages': items[start:end]}
@@ -103,8 +109,8 @@ def slack(monkeypatch):
 
 
 def run(folders):
-    """Run main() and return the export's rows (header first)."""
-    du.main()
+    """Run main() with its window ending at NOW and return the export's rows (header first)."""
+    du.main(now=NOW)
     return read_csv(folders['DocketUpdates'] / 'Parsed_Slack_Messages.csv')
 
 
@@ -151,9 +157,9 @@ def test_sends_the_token_and_reads_only(slack, folders, msgboxes):
 def test_follows_pages_until_the_last(slack, folders, monkeypatch, msgboxes):
     """History longer than one page is read to the end through next_cursor."""
     monkeypatch.setattr(du, '_PAGE_SIZE', 2)
-    slack.history = [msg(ts(2026, 9, day, 12, 0, 0), f'day {day}') for day in range(25, 20, -1)]
+    slack.history = [msg(ts(2026, 9, day, 12, 0, 0), f'day {day}') for day in range(30, 25, -1)]
     rows = run(folders)
-    assert [r[3] for r in rows[1:]] == ['day 25', 'day 24', 'day 23', 'day 22', 'day 21']
+    assert [r[3] for r in rows[1:]] == ['day 30', 'day 29', 'day 28', 'day 27', 'day 26']
     assert len(slack.calls('conversations.history')) == 3
 
 
@@ -231,10 +237,28 @@ def test_waits_and_retries_when_rate_limited(slack, folders, msgboxes):
 
 
 def test_gives_up_after_too_many_rate_limits(slack, folders, msgboxes):
-    """Endless 429s end in an error (the __main__ handler then shows the failure box)."""
+    """Endless 429s end in an error (the __main__ handler then shows the failure box) that warns the
+    comparison files weren't updated; the HTTP error is its cause."""
     slack.rate_limit_next = du._MAX_RETRIES + 1
-    with pytest.raises(HTTPError):
+    with pytest.raises(du.RunFailed, match="don't load Slack_Docket_Upload.csv") as info:
         du.main()
+    assert isinstance(info.value.__cause__, HTTPError)
+
+
+def test_unexpected_error_box_warns_the_files_are_old(slack, folders, fake_ark, monkeypatch, msgboxes, tmp_path):
+    """Any other failure (here the RW report can't be read) reaches run_button's error box with the
+    error and the warning not to load the upload file."""
+    slack.history = [msg(ts(2026, 9, 30, 15, 0, 0), _POOLING.format(status='GRANTED'))]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER])
+
+    def broken(path):
+        """Stand-in for _read_rw on a report it can't read."""
+        raise ValueError('report is empty')
+    monkeypatch.setattr(du, '_read_rw', broken)
+    with pytest.raises(du.RunFailed):
+        du.ark_common.run_button('Docket Updates Slack', lambda: du.main(now=NOW), str(tmp_path / 'error.log'))
+    text = _box(msgboxes)
+    assert 'report is empty' in text and du._STALE_NOTE in text
 
 
 def test_slack_error_is_shown(slack, folders, msgboxes):
@@ -242,7 +266,7 @@ def test_slack_error_is_shown(slack, folders, msgboxes):
     slack.error = {'error': 'missing_scope', 'needed': 'channels:history'}
     du.main()
     text = _box(msgboxes)
-    assert 'missing_scope' in text and 'channels:history' in text
+    assert 'missing_scope' in text and 'channels:history' in text and du._STALE_NOTE in text
     assert not (folders['DocketUpdates'] / 'Parsed_Slack_Messages.csv').exists()
     assert not (folders['DocketUpdates'] / 'Slack_Docket_Differences.xlsx').exists()
 
@@ -258,7 +282,7 @@ def test_missing_token_explains_setup(slack, folders, monkeypatch, msgboxes, tok
     monkeypatch.setattr(du.ark_common, 'read_slack_token', read_slack_token)
     du.main()
     text = _box(msgboxes)
-    assert '[SlackCredentials]' in text and 'channels:history' in text
+    assert '[SlackCredentials]' in text and 'channels:history' in text and du._STALE_NOTE in text
     assert slack.requests == []
 
 
@@ -270,15 +294,61 @@ def test_locked_csv_says_close_excel(slack, folders, monkeypatch, msgboxes):
         """Stand-in for _write_csv on a file Excel has open."""
         raise PermissionError(13, 'Permission denied', path)
     monkeypatch.setattr(du, '_write_csv', locked)
-    du.main()
-    assert 'Close it in Excel' in _box(msgboxes)
+    du.main(now=NOW)
+    text = _box(msgboxes)
+    assert 'Close it in Excel' in text and du._STALE_NOTE in text
 
 
 def test_no_messages_still_writes_the_header(slack, folders, msgboxes):
     """An empty channel gives a header-only CSV and says so."""
     rows = run(folders)
     assert rows == [du._OUTPUT_HEADER]
-    assert 'No messages' in _box(msgboxes)
+    assert 'No messages from Cheyanne Winn found in #docket-updates in the last 7 days' in _box(msgboxes)
+
+
+def test_reads_only_the_last_7_days(slack, folders, fake_ark, msgboxes):
+    """Slack is asked only for messages after NOW minus 7 days, so an older post and its case are
+    neither exported nor compared, and the box names the window."""
+    slack.history = [msg(ts(2026, 9, 27, 9, 0, 0), 'Case 32369: GRANTED'),
+                     msg(ts(2026, 9, 25, 23, 0, 0), 'Case 32370: DENIED')]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER])
+    rows = run(folders)
+    assert [c['oldest'] for c in slack.calls('conversations.history')] == [f'{datetime(2026, 9, 26).timestamp():.6f}']
+    assert [r[3] for r in rows[1:]] == ['Case 32369: GRANTED']
+    text = _box(msgboxes)
+    assert 'Saved 1 message(s) from Cheyanne Winn in #docket-updates in the last 7 days' in text
+    assert 'Compared 1 case(s) from the messages' in text
+
+
+def test_window_ends_now_by_default(slack, folders, msgboxes):
+    """Without now, the 7 days are counted back from the current time."""
+    du.main()
+    [call] = slack.calls('conversations.history')
+    assert abs(float(call['oldest']) - (time.time() - 7 * 86400)) < 60
+
+
+@pytest.mark.parametrize('now', [
+    datetime(2026, 11, 3, 12, 0),  # days after daylight saving ended (11/1/2026)
+    datetime(2026, 3, 10, 12, 0),  # days after it started (3/8/2026)
+])
+def test_window_is_exactly_7_days_across_a_daylight_saving_change(slack, folders, msgboxes, now):
+    """The window is 7 x 24 hours back from now even when a clock change falls inside it (7 local
+    days back used to be an hour off for a week after each change; seen 11/02/2026)."""
+    du.main(now=now)
+    [call] = slack.calls('conversations.history')
+    assert float(call['oldest']) == pytest.approx(now.timestamp() - 7 * 86400, abs=1e-3)
+
+
+@pytest.mark.xfail(strict=True, reason='KNOWN_ISSUES: Docket Updates Slack misses a reply in the last 7 days '
+                                       'to a post from before them')
+def test_recent_reply_to_an_older_post_is_exported(slack, folders, msgboxes):
+    """Her reply sent in the window, in the thread of a post from before it, is exported."""
+    parent = ts(2026, 9, 20, 10, 0, 0)
+    top = msg(parent, 'Board Order Updates from 9/20/2026', reply_count=1, thread_ts=parent)
+    slack.history = [top]
+    slack.replies = {parent: [top, msg(ts(2026, 10, 1, 9, 0, 0), 'Case 32384 was corrected', thread_ts=parent)]}
+    rows = run(folders)
+    assert [r[3] for r in rows[1:]] == ['Case 32384 was corrected']
 
 
 def test_csv_opens_in_excel_with_em_dashes(slack, folders, fake_ark, msgboxes):
@@ -355,6 +425,12 @@ def test_reads_case_fields_from_a_message():
      '283-2025', 'KRAKEN', 'AMENDMENT – CONTESTED', 'PARTIALLY GRANTED'),
     ('Case 33114 (SOGC, INC.(?)): Pooling and Spacing AMENDMENT: DISMISSED',
      '33114', 'SOGC, INC.(?)', 'Pooling and Spacing AMENDMENT', 'DISMISSED'),
+    ('Case 33201 (PHOENIX OPERATING LLC): Pooling and Spacing AMENDMENT GRANTED',  # no colon before the status
+     '33201', 'PHOENIX OPERATING LLC', 'Pooling and Spacing AMENDMENT', 'GRANTED'),
+    ('Case 33202 (EOG) Pooling DISMISSED', '33202', 'EOG', 'Pooling', 'DISMISSED'),  # no colons at all
+    ('Case 33203 (EOG): Spacing - PARTIALLY GRANTED', '33203', 'EOG', 'Spacing', 'PARTIALLY GRANTED'),
+    ('Case 33204 (EOG): Pooling ~GRANTED~ DENIED', '33204', 'EOG', 'Pooling', 'DENIED'),
+    ('Case 33205 (EOG): Pooling and Spacing GRANTED141', '33205', 'EOG', 'Pooling and Spacing', 'GRANTED'),
 ])
 def test_header_variants(line, number, applicant, case_type, status):
     """The header formats seen in #docket-updates all give the right fields."""
@@ -814,6 +890,85 @@ def test_dismissed_writes_a_blank_order_status(tmp_path):
     assert (row['Case Status'], row['Order Status'], row['Date Order Signed']) == ('Dismissed', '', '09/30/2026')
 
 
+def test_dismissed_takes_the_slack_well_count_and_post_date(tmp_path):
+    """A dismissed case still gets Slack's well count and the post date as Date Order Signed (32748 on
+    11/02/2026: RW had 0 wells, Slack 3)."""
+    _, [row], _ = uploads(tmp_path, [_POOLING.format(status='DISMISSED') + '\n(3 Wells)'],
+                          [urow('33068', 'Dismissed', '', '0', '')])
+    assert row == {'Record Id': 'REC-33068', 'Case Status': 'Dismissed', 'Order Status': '',
+                   'Number of Wells': '3', 'Date Order Signed': '09/30/2026', 'Case Notes': 'https://slack.example/p1'}
+
+
+@pytest.mark.parametrize('status, rw_status, rw_order, signed, differs', [
+    ('GRANTED', 'Ordered', 'Granted', '', True),        # matches otherwise: the blank date alone differs
+    ('DENIED', 'Ordered', 'Denied', '', True),
+    ('DISMISSED', 'Dismissed', '', '', True),
+    ('GRANTED', 'Ordered', 'Granted', '09/01/2026', True),   # earlier than the order date: moved forward
+    ('GRANTED', 'Ordered', 'Granted', '2026-09-29', True),
+    ('GRANTED', 'Ordered', 'Granted', '09/30/2026', False),  # already the order date
+    ('GRANTED', 'Ordered', 'Granted', '10/01/2026', False),  # later: never moved back
+    ('GRANTED', 'Ordered', 'Granted', 'pending', False),     # unreadable: not a difference by itself
+    ('', 'Docketed', '', '', False),                    # no result in Slack: no date to give
+])
+def test_blank_or_earlier_date_order_signed_differs(tmp_path, status, rw_status, rw_order, signed, differs):
+    """With a result in Slack, a record whose Date Order Signed is blank or earlier than the order date
+    differs on it, even when everything else matches, so it gets an upload row with the order date (here
+    the post's: no heading) and RW's other values."""
+    _, rows, [result] = uploads(tmp_path, [_POOLING.format(status=status)],
+                                [urow('33068', rw_status, rw_order, '2', signed)])
+    assert result['Differences'] == ('Date Order Signed' if differs else '')
+    assert result['RW Date Order Signed'] == signed
+    assert rows == ([{'Record Id': 'REC-33068', 'Case Status': rw_status, 'Order Status': rw_order,
+                      'Number of Wells': '2', 'Date Order Signed': '09/30/2026',
+                      'Case Notes': 'https://slack.example/p1'}] if differs else [])
+
+
+def test_date_order_signed_is_not_compared_without_the_rw_column(tmp_path):
+    """A report without Date Order Signed can't show a blank one, so a matching record stays a Match."""
+    [row], _ = compare(tmp_path, [_POOLING.format(status='GRANTED')], [rw_row('33068', 'Ordered')])
+    assert (row['Result'], row['RW Date Order Signed']) == ('Match', '')
+
+
+def test_blank_date_order_signed_highlights_the_order_dates(tmp_path):
+    """A blank Date Order Signed highlights Slack Order Date (the date the upload writes) and RW Date Order Signed."""
+    rows, _ = compare(tmp_path, [_POOLING.format(status='GRANTED')],
+                      [rw_row('33068', 'Ordered') + ['Granted', '']], header=_RW_HEADER + ['Order Status', 'Date Order Signed'])
+    path = tmp_path / 'diff.xlsx'
+    du._write_differences(str(path), rows)
+    values, highlighted, _ = read_differences(path)
+    assert values[1][0] == 'Date Order Signed'
+    assert highlighted == {(1, 'Slack Order Date'), (1, 'RW Date Order Signed')}
+
+
+@pytest.mark.parametrize('text, order_date', [
+    ('*Board Order Updates from 11/2/2026:*\n*NORTH DAKOTA:*', '11/02/2026'),
+    ('Board Order Update from 9/28/26:', '09/28/2026'),       # singular, two-digit year
+    ('board order updates FROM 10/05/2026', '10/05/2026'),   # any case
+    ('Case 33068 was corrected', '09/30/2026'),              # no heading: the post's date
+    ('Board Order Updates from 13/45/2026:', '09/30/2026'),  # not a date: the post's date
+])
+def test_order_date_comes_from_the_heading(text, order_date):
+    """The orders' date is the "Board Order Updates from" heading's, else the message's own date."""
+    assert du._order_date(text, '09/30/2026') == order_date
+
+
+def test_upload_writes_the_heading_date(tmp_path):
+    """A message posted 09/30 with the heading "Board Order Updates from 9/28/2026" uploads 09/28/2026 as
+    Date Order Signed, and the differences row shows it as Slack Order Date (Posted stays 09/30)."""
+    _, [row], [result] = uploads(tmp_path, ['*Board Order Updates from 9/28/2026:*\n' + _POOLING.format(status='GRANTED')],
+                                 [urow('33068', 'Ordered', 'Granted', '', '')])
+    assert row['Date Order Signed'] == '09/28/2026'
+    assert (result['Posted'], result['Slack Order Date'], result['Differences']) == \
+        ('09/30/2026', '09/28/2026', 'Date Order Signed')
+
+
+def test_heading_date_already_in_rw_matches(tmp_path):
+    """RW already holding the heading's date matches, though the message was posted later."""
+    [row], _ = compare(tmp_path, ['Board Order Updates from 9/28/2026:\n' + _POOLING.format(status='GRANTED')],
+                       [rw_row('33068', 'Ordered') + ['09/28/2026']], header=_RW_HEADER + ['Date Order Signed'])
+    assert row['Result'] == 'Match'
+
+
 @pytest.mark.parametrize('rw_date, written', [
     ('', '09/30/2026'),                     # blank: the post's date
     ('09/01/2026', '09/30/2026'),           # earlier: moved forward
@@ -844,10 +999,10 @@ def test_link_already_in_case_notes_is_not_added_again(tmp_path):
 
 
 def test_only_differing_records_are_uploaded(tmp_path):
-    """A matching record and a case missing from RW get no upload row."""
+    """A matching record (Date Order Signed already the order date) and a case missing from RW get no upload row."""
     _, rows, _ = uploads(tmp_path, [_POOLING.format(status='GRANTED') + '\nCase 33069 (X): Pooling: GRANTED'
                                     '\nCase 32275 (X): Pooling: GRANTED'],
-                         [urow('33068', 'Ordered', 'Granted'), urow('33069', 'Docketed')])
+                         [urow('33068', 'Ordered', 'Granted', signed='09/30/2026'), urow('33069', 'Docketed')])
     assert [r['Record Id'] for r in rows] == ['REC-33069']
 
 
@@ -879,10 +1034,10 @@ def test_upload_leaves_out_columns_the_report_lacks(tmp_path):
 # ---- Cases not in RW (Slack_Not_In_RW.csv) ----
 
 def test_not_in_rw_lists_the_slack_side(tmp_path):
-    """Only Not in RW cases are listed, with the Slack fields and well count (blank when none) and no
-    state or sections; a case RW has is left out."""
+    """Only Not in RW cases are listed, with the Slack fields and well count as Number of Wells (RW's
+    name; blank when none) and no state or sections; a case RW has is left out."""
     assert du._MISSING_HEADER == ['Case Number', 'Applicant', 'Case Type', 'Case Status', 'Order Status',
-                                  'Well Count']
+                                  'Number of Wells']
     rows = not_in_rw(tmp_path, [
         'NORTH DAKOTA:\n' + _POOLING.format(status='GRANTED') +
         '\nCase 32275 (CONTINENTAL): Pooling and Spacing: DENIED\n(2 Wells)\n19-155N-97W-ALL\n20-155N-97W-W2\n'
@@ -890,14 +1045,14 @@ def test_not_in_rw_lists_the_slack_side(tmp_path):
         [rw_row('33068', 'Ordered')])
     assert rows == [
         {'Case Number': '32275', 'Applicant': 'CONTINENTAL', 'Case Type': 'Pooling and Spacing',
-         'Case Status': 'Ordered', 'Order Status': 'Denied', 'Well Count': 2},
+         'Case Status': 'Ordered', 'Order Status': 'Denied', 'Number of Wells': 2},
         {'Case Number': '85-2026', 'Applicant': 'KRAKEN', 'Case Type': 'Spacing',
-         'Case Status': 'Dismissed', 'Order Status': '', 'Well Count': ''}]
+         'Case Status': 'Dismissed', 'Order Status': '', 'Number of Wells': ''}]
 
 
 def test_not_in_rw_one_row_per_case(tmp_path):
     """A case with several well groups is still one Not in RW row, with their wells added up."""
-    assert [(r['Case Number'], r['Well Count']) for r in not_in_rw(tmp_path, [_GROUPED], [])] == [('32840', 8)]
+    assert [(r['Case Number'], r['Number of Wells']) for r in not_in_rw(tmp_path, [_GROUPED], [])] == [('32840', 8)]
 
 
 @pytest.mark.parametrize('slack, case_status, order_status', [
@@ -942,11 +1097,92 @@ def test_compares_messages_with_the_rw_report(slack, folders, fake_ark, msgboxes
     assert 'Compared 3 case(s) from the messages with 2 RW case(s): 1 match, 1 differ, 1 not in RW.' in text
     assert '1 RW record in the upload file; 0 differing record(s) with sub-cases left out' in text
     assert 'Nothing was uploaded' in text
-    assert 'Not compared (no such column in the RW report): Order Status' in text
+    assert 'Not compared (no such column in the RW report): Order Status, Date Order Signed' in text
     assert ('Left out of the upload (no such column in the RW report): Order Status, Date Order Signed, '
             'Case Notes') in text
     for name in ('Slack_Docket_Differences.xlsx', 'Slack_Docket_Upload.csv', 'Slack_Not_In_RW.csv'):
         assert str(out / name) in text
+
+
+def test_main_returns_the_counts(slack, folders, fake_ark, msgboxes):
+    """main() returns (cases, differing RW records, upload rows, cases not in RW) for mirror_step."""
+    slack.history = [msg(ts(2026, 9, 30, 15, 0, 0), _POOLING.format(status='GRANTED') + '\nCase 32275 (C): Pooling: DENIED')]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER, rw_row('33068', '')])
+    assert du.main(now=NOW) == (2, 1, 1, 1)
+
+
+# ---- Mirror step ----
+
+@pytest.fixture
+def window_now(monkeypatch):
+    """mirror_step calls main(quiet=True) with no now: end its window at NOW instead."""
+    real = du.main
+    monkeypatch.setattr(du, 'main', lambda quiet=False: real(now=NOW, quiet=quiet))
+
+
+@pytest.mark.parametrize('texts, rw_rows, kind, line', [
+    ([], [],
+     'No changes', 'No board order cases in the last 7 days'),
+    ([_POOLING.format(status='GRANTED')], [rw_row('33068', 'Ordered')],
+     'No changes', 'No differences in 1 case from the last 7 days'),
+    ([_POOLING.format(status='GRANTED')], [rw_row('33068', '')],
+     'Needs review', '1 RW record to fix (1 in Slack_Docket_Upload.csv, not uploaded): review Slack_Docket_Differences.xlsx'),
+    (['Case 32275 (C): Pooling: GRANTED'], [],
+     'Needs review', '1 case not in RW: review Slack_Not_In_RW.csv'),
+    ([_POOLING.format(status='GRANTED'), 'Case 32275 (C): Pooling: GRANTED'], [rw_row('33068', ''), rw_row('33068-1', '')],
+     'Needs review', '2 RW records to fix (0 in Slack_Docket_Upload.csv, not uploaded), 1 case not in RW: '
+                     'review Slack_Docket_Differences.xlsx and Slack_Not_In_RW.csv'),
+])
+def test_mirror_step_reports_one_line(slack, folders, fake_ark, msgboxes, window_now, texts, rw_rows, kind, line):
+    """Mirror's step shows no box and returns Needs review (naming the files to look at) when an RW
+    record differs or a case isn't in RW, otherwise No changes."""
+    slack.history = [msg(ts(2026, 9, 30, 15, 0, k), t) for k, t in enumerate(texts)]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER] + rw_rows)
+    assert du.mirror_step() == (kind, line)
+    assert msgboxes == []
+
+
+def test_mirror_step_raises_without_a_token(slack, folders, monkeypatch, msgboxes, window_now):
+    """No token: Mirror gets an error (reported as Failed) instead of a box nobody sees. Its one line
+    starts with the warning not to load the upload file, then the error's type and first line."""
+    monkeypatch.setattr(du.ark_common, 'read_slack_token', lambda: '')
+    with pytest.raises(du.RunFailed) as info:
+        du.mirror_step()
+    assert str(info.value) == f'{du._STALE_SHORT}. SlackError: No Slack token found.'
+    assert isinstance(info.value.__cause__, du.SlackError)
+    assert msgboxes == [] and slack.requests == []
+
+
+def test_mirror_step_raises_on_a_slack_error(slack, folders, msgboxes, window_now):
+    """ok: false from Slack is raised for Mirror instead of shown."""
+    slack.error = {'error': 'invalid_auth'}
+    with pytest.raises(du.RunFailed, match="don't load it. SlackError: .*invalid_auth") as info:
+        du.mirror_step()
+    assert isinstance(info.value.__cause__, du.SlackError)
+    assert msgboxes == []
+
+
+def test_mirror_step_raises_on_a_locked_file(slack, folders, fake_ark, monkeypatch, msgboxes, window_now):
+    """A file open in Excel is raised for Mirror (with its name) instead of shown."""
+    slack.history = [msg(ts(2026, 9, 30, 15, 0, 0), _POOLING.format(status='GRANTED'))]
+    fake_ark.serve(du._REPORT_URL, [_RW_HEADER])
+
+    def locked(path, *args):
+        """Stand-in for _write_differences on a workbook Excel has open."""
+        raise PermissionError(13, 'Permission denied', path)
+    monkeypatch.setattr(du, '_write_differences', locked)
+    with pytest.raises(du.RunFailed, match='PermissionError: .*Slack_Docket_Differences.xlsx') as info:
+        du.mirror_step()
+    assert isinstance(info.value.__cause__, PermissionError)
+    assert msgboxes == []
+
+
+def test_mirror_report_line_keeps_the_warning(slack, folders, msgboxes, window_now):
+    """Mirror's Failed line (its first 200 characters) starts with the warning, even after a long error."""
+    import mirror
+    slack.error = {'error': 'x' * 400}
+    kind, line = mirror._run_here(mirror.Step('Docket Updates Slack', du.mirror_step, uploads=False))
+    assert kind == mirror.FAILED and line.startswith(f'RunFailed: {du._STALE_SHORT}. SlackError: ')
 
 
 def test_differences_workbook_highlights_the_differing_cells(tmp_path):
@@ -970,7 +1206,7 @@ def test_differences_workbook_highlights_the_differing_cells(tmp_path):
 def test_no_cases_means_no_ark_download(slack, folders, fake_ark, msgboxes):
     """Messages without any case don't open Ark; the differences workbook, upload (Record Id only: no
     report columns known) and Not in RW CSV are header-only and the box says so."""
-    slack.history = [msg(ts(2026, 9, 24, 13, 0, 0), 'Board Order Updates from 9/24/2026:\nNORTH DAKOTA:\nN/A')]
+    slack.history = [msg(ts(2026, 9, 28, 13, 0, 0), 'Board Order Updates from 9/28/2026:\nNORTH DAKOTA:\nN/A')]
     run(folders)
     assert fake_ark.downloads == []
     assert read_differences(folders['DocketUpdates'] / 'Slack_Docket_Differences.xlsx')[0] == [du._DIFF_HEADER]
@@ -991,6 +1227,6 @@ def test_locked_comparison_file_says_close_excel(slack, folders, fake_ark, monke
                 raise PermissionError(13, 'Permission denied', path)
             real(path, *args)
         monkeypatch.setattr(du, name, write)
-    du.main()
+    du.main(now=NOW)
     text = _box(msgboxes)
     assert locked in text and 'Close it in Excel' in text

@@ -1,7 +1,8 @@
 // main.cpp — entry point and main window for Phoenix Land Department Reporting (phxcpp.exe).
 // Builds the grid of buttons; each button either launches a Python script that sits next to
 // the exe (LaunchScript: `py "<exeDir>\script.py"`, no console window) or opens a C++ dialog
-// (Settings -> settings.cpp, Organization -> organize.cpp, Rename -> rename.cpp).
+// (Settings -> settings.cpp, Organization -> organize.cpp, Rename -> rename.cpp). Merge opens its
+// link window (merge.cpp) first, then launches merge.py with the two accounts' record ids.
 // Each button is labeled with the Desktop folder its work goes to (C2E, NAI, STR, ...).
 // Index and Maps run their scripts on a background thread so the window stays responsive.
 // Mirror (top-left, mirror.cpp) runs several buttons' work in a row; those buttons are drawn green.
@@ -17,6 +18,7 @@
 #include "organize.h"
 #include "rename.h"
 #include "mirror.h"
+#include "merge.h"
 
 // Enable visual styles (modern button rendering) without a separate .manifest file
 #pragma comment(lib, "comctl32.lib")
@@ -33,12 +35,12 @@
 #define ID_BUTTON_STR          10
 #define ID_BUTTON_TPP_LHPP     22
 #define ID_BUTTON_COST         23
-#define ID_BUTTON_DOCKET_UPDATES 51  // runs docket_updates.py (Hearing Dockets workbook vs RW)
 #define ID_BUTTON_SIB          36  // runs section_id_blank.py; also a Mirror step
-#define ID_BUTTON_DOCKET_UPDATES_SLACK 59  // runs docket_updates_slack.py (Slack #docket-updates vs RW)
+#define ID_BUTTON_DOCKET_UPDATES 51  // "Docket Updates Sheet": runs docket_updates.py (Hearing Dockets workbook vs RW)
+#define ID_BUTTON_DOCKET_UPDATES_SLACK 59  // runs docket_updates_slack.py (Slack #docket-updates vs RW); also a Mirror step
 // Column 2
 #define ID_BUTTON_PPIQ         20
-#define ID_BUTTON_AOI          11
+#define ID_BUTTON_AOI          11  // runs str_verification.py --aoi; also Mirror's last step
 #define ID_BUTTON_NAI           9  // runs nai_download.py (Newly Acquired Interest; was DMD)
 #define ID_BUTTON_ORGANIZE     44
 // Column 3
@@ -46,6 +48,7 @@
 #define ID_BUTTON_DECEASED     40
 #define ID_BUTTON_RENAME       47
 #define ID_BUTTON_MAP          48
+#define ID_BUTTON_MERGE        61  // opens the Merge link window (merge.cpp), then runs merge.py <id> <id>
 // Column 4
 #define ID_BUTTON_ELMI         30
 #define ID_BUTTON_HBPNW        32
@@ -123,12 +126,14 @@ static const MirrorStep g_mirrorSteps[] = {
     { ID_BUTTON_COST,            true  },
     { ID_BUTTON_CASE_UNIT_NAMES, true  },
     { ID_BUTTON_SIB,             true  },
+    { ID_BUTTON_DOCKET_UPDATES_SLACK, false },
+    { ID_BUTTON_AOI,             false },  // last; mirror.py puts its line at the end of the report
 };
 
 // Buttons Mirror doesn't run but disables while it runs, because their scripts share the Ark
 // login (session.json) with Mirror's steps (test_wiring checks every such script is covered).
 static const int g_lockedDuringMirror[] = {
-    ID_BUTTON_PPIQ, ID_BUTTON_AOI, ID_BUTTON_NAI,
+    ID_BUTTON_PPIQ, ID_BUTTON_NAI, ID_BUTTON_DOCKET_UPDATES, ID_BUTTON_MERGE,
 };
 
 // True if id is one of g_mirrorSteps. WM_CREATE makes those buttons owner-drawn so WM_DRAWITEM can paint them green.
@@ -378,10 +383,11 @@ void LayoutControls(HWND hwnd) {
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_INDEX),    c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CASE_UNIT_NAMES), c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_STR),      c1, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_AOI),      c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_TPP_LHPP), c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_COST),     c1, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DOCKET_UPDATES), c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_SIB),      c1, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DOCKET_UPDATES), c1, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DOCKET_UPDATES_SLACK), c1, y, bw, bh, TRUE);
 
     // Settings pinned to bottom-left
@@ -403,7 +409,6 @@ void LayoutControls(HWND hwnd) {
     // Column 2
     y = y0;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_PPIQ),     c2, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_AOI),      c2, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_NAI),      c2, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_ORGANIZE), c2, y, bw, bh, TRUE);
 
@@ -412,7 +417,8 @@ void LayoutControls(HWND hwnd) {
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_CASE_MATCHUP), c3, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_DECEASED), c3, y, bw, bh, TRUE); y += bh + gap;
     MoveWindow(GetDlgItem(hwnd, ID_BUTTON_RENAME),   c3, y, bw, bh, TRUE); y += bh + gap;
-    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_MAP),      c3, y, bw, bh, TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_MAP),      c3, y, bw, bh, TRUE); y += bh + gap;
+    MoveWindow(GetDlgItem(hwnd, ID_BUTTON_MERGE),    c3, y, bw, bh, TRUE);
 
     // Column 4
     y = y0;
@@ -489,15 +495,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 { ID_BUTTON_INDEX,       TEXT("Index")                 },
                 { ID_BUTTON_CASE_UNIT_NAMES, TEXT("Cases Unit Names")  },
                 { ID_BUTTON_STR,         TEXT("STR")                   },
+                { ID_BUTTON_AOI,         TEXT("AOI")                   },
                 { ID_BUTTON_TPP_LHPP,    TEXT("TPP-LHPP")             },
                 { ID_BUTTON_COST,        TEXT("C2E")                   },
-                { ID_BUTTON_DOCKET_UPDATES, TEXT("Docket Updates")     },
                 { ID_BUTTON_SIB,         TEXT("SIB")                   },
+                { ID_BUTTON_DOCKET_UPDATES, TEXT("Docket Updates Sheet") },
                 { ID_BUTTON_DOCKET_UPDATES_SLACK, TEXT("Docket Updates Slack") },
                 { ID_BUTTON_SETTINGS,    TEXT("Settings")              },
                 // Column 2
                 { ID_BUTTON_PPIQ,        TEXT("PPIQ")                 },
-                { ID_BUTTON_AOI,         TEXT("AOI")                   },
                 { ID_BUTTON_NAI,         TEXT("NAI")                   },
                 { ID_BUTTON_ORGANIZE,    TEXT("Organization")          },
                 // Column 3
@@ -505,6 +511,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 { ID_BUTTON_DECEASED,    TEXT("Bring out your dead")   },
                 { ID_BUTTON_RENAME,      TEXT("Rename")                },
                 { ID_BUTTON_MAP,         TEXT("Maps")                  },
+                { ID_BUTTON_MERGE,       TEXT("Merge")                 },
                 // Column 4
                 { ID_BUTTON_ELMI,        TEXT("ELMI")                  },
                 { ID_BUTTON_HBPNW,       TEXT("HBPNW")                 },
@@ -669,6 +676,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 LaunchScript(hwnd, TEXT("case_matchup.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_RENAME) {
                 OpenRename(hwnd);
+            } else if (LOWORD(wParam) == ID_BUTTON_MERGE) {
+                // The link window comes first; Cancel launches nothing
+                std::wstring mergeArgs;
+                if (AskMergeAccounts(hwnd, mergeArgs)) {
+                    LaunchScript(hwnd, TEXT("merge.py"), mergeArgs.c_str());
+                }
             } else if (LOWORD(wParam) == ID_BUTTON_CASE_UNIT_NAMES) {
                 LaunchScript(hwnd, TEXT("case_unit_names.py"));
             } else if (LOWORD(wParam) == ID_BUTTON_MAP) {
@@ -731,6 +744,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     RegisterSettingsClass(hInstance);     // register the settings window class defined in settings.cpp
     RegisterOrganizeClass(hInstance);     // register the classify dialog class used by Organization
     RegisterRenameClass(hInstance);       // register the dialog class used by Rename
+    RegisterMergeClass(hInstance);        // register the link window class used by Merge
 
     g_hwndMain = CreateWindowEx(
         0, CLASS_NAME, TEXT("Phoenix Land Department Reporting"),

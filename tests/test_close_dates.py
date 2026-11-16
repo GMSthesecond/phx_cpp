@@ -12,6 +12,7 @@ from fakes import Recorder, read_csv
 
 _MONDAY = date(2026, 9, 28)  # a Monday, so the weekend rule applies
 _TUESDAY = date(2026, 9, 29)
+_HEADER = ['Offer: Offer Name', 'LandHoldingTransaction: LandHolding Id', 'Offer: Close Date', 'Offer: Status']  # the real report's header (11/3/2026)
 
 
 def _pin_today(monkeypatch, day):
@@ -75,12 +76,12 @@ def test_monday_run_writes_weekend_closes_and_uploads(fake_ark, folders, monkeyp
     upload = Recorder()
     monkeypatch.setattr(ark_common, 'upload', upload)
     fake_ark.serve(close_dates._REPORT_URL, [
-        ['Name', 'Id', 'Close Date', 'Status', 'x'],
-        ['a', 'LH-FRI', '09/25/2026', 'Closed', ''],
-        ['b', 'LH-SUN', '2026-09-27', 'Closed', ''],
-        ['c', 'LH-THU', '09/24/2026', 'Closed', ''],   # before the window
-        ['d', 'LH-DEF', '09/26/2026', 'Deferred', ''],
-        ['e', 'LH-BAD', 'not a date', 'Closed', ''],
+        _HEADER,
+        ['a', 'LH-FRI', '09/25/2026', 'Closed'],
+        ['b', 'LH-SUN', '2026-09-27', 'Closed'],
+        ['c', 'LH-THU', '09/24/2026', 'Closed'],   # before the window
+        ['d', 'LH-DEF', '09/26/2026', 'Deferred'],
+        ['e', 'LH-BAD', 'not a date', 'Closed'],
         ['short'],
     ])
 
@@ -95,14 +96,50 @@ def test_monday_run_writes_weekend_closes_and_uploads(fake_ark, folders, monkeyp
     assert fake_ark.sessions_saved == 1 and fake_ark.browser_closed
 
 
+def test_deferred_deal_in_the_real_four_column_report_is_skipped(fake_ark, folders, monkeypatch, msgboxes):
+    """The real report has four columns, Status last: a Deferred deal is still skipped (the check
+    used to need a fifth column, so Deferred deals were uploaded)."""
+    _pin_today(monkeypatch, _TUESDAY)
+    monkeypatch.setattr(ark_common, 'upload', Recorder())
+    fake_ark.serve(close_dates._REPORT_URL, [_HEADER, ['a', 'LH-PAID', '09/28/2026', 'Paid'],
+                                             ['d', 'LH-DEF', '09/28/2026', 'Deferred']])
+
+    assert close_dates.main() == 1
+
+    assert read_csv(folders['CloseDates'] / 'close_dates.09.29.2026.csv') == [['Id', 'Close Date'],
+                                                                             ['LH-PAID', '09/28/2026']]
+    assert ('Close Dates', 'A deferred deal was skipped') in msgboxes
+
+
+@pytest.mark.parametrize('header', [
+    ['Id', 'Total Purchase Price', 'Status', 'Close Date'],              # TPP-LHPP's offers report
+    ['Offer: Offer Name', 'LandHoldingTransaction: LandHolding Id', 'Offer: Status', 'Offer: Close Date'],  # reordered
+    [],                                                                   # empty file
+])
+def test_a_different_report_fails_without_writing_or_uploading(fake_ark, folders, monkeypatch, header):
+    """A download without the report's columns raises naming the report, and nothing is written or
+    uploaded (rows read by position from another report used to be dropped silently as "no closes")."""
+    _pin_today(monkeypatch, _TUESDAY)
+    upload = Recorder()
+    monkeypatch.setattr(ark_common, 'upload', upload)
+    fake_ark.serve(close_dates._REPORT_URL, [header, ['a', 'LH-1', '09/28/2026', 'Paid']] if header else [])
+
+    with pytest.raises(RuntimeError, match='Land Holding Closings EM'):
+        close_dates.main()
+
+    assert upload.calls == []
+    assert not (folders['CloseDates'] / 'close_dates.09.29.2026.csv').exists()
+    assert fake_ark.sessions_saved == 1 and fake_ark.browser_closed
+
+
 def _serve_monday_report(fake_ark):
     """Serves a report with two Friday-Sunday closes, a Deferred one and one outside the window."""
     fake_ark.serve(close_dates._REPORT_URL, [
-        ['Name', 'Id', 'Close Date', 'Status', 'x'],
-        ['a', 'LH-FRI', '09/25/2026', 'Closed', ''],
-        ['b', 'LH-SUN', '2026-09-27', 'Closed', ''],
-        ['c', 'LH-THU', '09/24/2026', 'Closed', ''],
-        ['d', 'LH-DEF', '09/26/2026', 'Deferred', ''],
+        _HEADER,
+        ['a', 'LH-FRI', '09/25/2026', 'Closed'],
+        ['b', 'LH-SUN', '2026-09-27', 'Closed'],
+        ['c', 'LH-THU', '09/24/2026', 'Closed'],
+        ['d', 'LH-DEF', '09/26/2026', 'Deferred'],
     ])
 
 
@@ -112,8 +149,8 @@ def test_no_closes_skips_the_upload(fake_ark, folders, monkeypatch):
     _pin_today(monkeypatch, _TUESDAY)
     upload = Recorder()
     monkeypatch.setattr(ark_common, 'upload', upload)
-    fake_ark.serve(close_dates._REPORT_URL, [['Name', 'Id', 'Close Date', 'Status', 'x'],
-                                             ['a', 'LH-OLD', '09/01/2026', 'Closed', '']])
+    fake_ark.serve(close_dates._REPORT_URL, [_HEADER,
+                                             ['a', 'LH-OLD', '09/01/2026', 'Closed']])
 
     assert close_dates.main() == 0
 

@@ -1,6 +1,6 @@
 """Pulls deals that closed on the previous business day from Ark and uploads their Close Dates.
 Launched by the "Close Date" button. Logs into Ark (ark_common credentials/session), downloads
-the close-date report, keeps rows that closed since the last business day (Friday-Sunday on
+the close-date report (_REPORT_NAME, checked for _COLUMNS), keeps rows that closed since the last business day (Friday-Sunday on
 Mondays, and further back after a holiday; see _holidays), writes
 close_dates.<mm.dd.yyyy>.csv to the [Folders] CloseDates folder, then uploads it (if it has any
 rows) through the Ark data loader as a Landholdings Update. Also Mirror's "Close Date" step
@@ -19,7 +19,10 @@ def _notify(message):
     """Show an info message box titled "Close Dates"."""
     ark_common.notify('Close Dates', message, 0x40)
 
-_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=c348d047aeebd9028494bf6c'  # Ark report listing record Id and Close Date
+_REPORT_URL = 'https://ark.phoenixenergy.com/report?recordId=c348d047aeebd9028494bf6c'  # Ark report "Land Holding Closings EM"
+_REPORT_NAME = 'Land Holding Closings EM'  # the report's name in Ark, for the wrong-report error
+# Its columns, read by position (None = not read); a download without them is another report
+_COLUMNS = (None, 'LandHoldingTransaction: LandHolding Id', 'Offer: Close Date', 'Offer: Status')
 
 
 def _nth_weekday(year, month, weekday, n):
@@ -72,9 +75,9 @@ def _target_dates():
 
 
 def main(quiet=False):
-    """Log in, download the report, filter to the target close dates (skipping Deferred
-    deals), write the CSV, and upload it if it has any rows. Always saves the browser session
-    afterward. Returns the number of close dates uploaded. quiet=True (Mirror) shows no message boxes."""
+    """Log in, download the report (RuntimeError, nothing written, if it lacks _COLUMNS), filter
+    to the target close dates (skipping Deferred deals), write the CSV, and upload it if it has any
+    rows. Always saves the browser session afterward. Returns the number of close dates uploaded. quiet=True (Mirror) shows no message boxes."""
     out_dir = ark_common.read_folder('CloseDates', _DEFAULT_DIR)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -84,6 +87,7 @@ def main(quiet=False):
 
     with ark_common.ark_page(_REPORT_URL) as page:
         dl = ark_common.trigger_download(page, _REPORT_URL)
+        ark_common.check_columns(dl.path(), _COLUMNS, _REPORT_NAME)
 
         # Read the temp file while the browser still holds it open
         with open(dl.path(), newline='', encoding='utf-8-sig') as f:
@@ -92,7 +96,7 @@ def main(quiet=False):
             for row in reader:
                 if len(row) < 3:
                     continue
-                if len(row) >= 5 and row[3].strip() == 'Deferred':
+                if len(row) >= 4 and row[3].strip() == 'Deferred':
                     if not quiet:
                         _notify('A deferred deal was skipped')
                     continue

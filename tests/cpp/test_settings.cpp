@@ -47,13 +47,14 @@ TEST(settings_missing_ini_keeps_defaults) {
     CHECK(!FileExists(IniPath()));  // loading never writes
 }
 
-TEST(settings_renamed_key_falls_back_to_its_old_name) {
-    // A settings.ini from before the DMD -> NAI rename has only the old key: the row shows it
+TEST(settings_old_dmd_key_is_ignored) {
+    // A settings.ini from before the DMD -> NAI rename still has the old key pointing at DMD: the NAI
+    // row keeps its default instead (else OK in Settings would save the DMD path under the new key)
     WritePrivateProfileString(L"Folders", L"DataMeetingDownload", L"D:\\Old DMD", IniPath().c_str());
     SetSetting(L"Folders", L"NewlyAcquiredInterest", L"C:\\Default\\NAI");
     LoadSettings();
-    CHECK_EQ(std::wstring(GetSetting(L"Folders", L"NewlyAcquiredInterest")), std::wstring(L"D:\\Old DMD"));
-    // Once the new key is saved it wins over the old one
+    CHECK_EQ(std::wstring(GetSetting(L"Folders", L"NewlyAcquiredInterest")), std::wstring(L"C:\\Default\\NAI"));
+    // Once the new key is saved it is used
     WritePrivateProfileString(L"Folders", L"NewlyAcquiredInterest", L"D:\\NAI", IniPath().c_str());
     LoadSettings();
     CHECK_EQ(std::wstring(GetSetting(L"Folders", L"NewlyAcquiredInterest")), std::wstring(L"D:\\NAI"));
@@ -92,4 +93,13 @@ TEST(settings_every_row_is_unique_and_secrets_are_hidden) {
         bool secret = lstrcmpi(s_settings[i].key, L"password") == 0 || lstrcmpi(s_settings[i].key, L"token") == 0;
         CHECK_EQ(secret, s_settings[i].kind == SETTING_SECRET);
     }
+}
+
+TEST(settings_window_reenables_the_launcher_before_it_closes) {
+    RegisterSettingsClass(GetModuleHandle(NULL));
+    CHECK(OwnerEnabledWhenPopupCloses(SETTINGS_CLASS, [](HWND popup, HWND owner) {
+        s_hwndParent = owner;
+        SendMessage(popup, WM_CLOSE, 0, 0);
+    }));
+    s_hwndParent = NULL;
 }

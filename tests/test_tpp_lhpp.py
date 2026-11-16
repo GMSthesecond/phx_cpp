@@ -181,3 +181,65 @@ def test_mirror_step_flags_unreadable_close_dates_even_with_none_closing_soon(fa
         ark_common.REVIEW,
         "No price mismatches closing in the next two weeks, but 2 have a Close Date Mirror couldn't read: "
         'review PHX_Price_Paid_Export.xlsx')
+
+
+_SOON_OFFERS = [['OF-A', '100', 'Open', '2026-10-09'], ['OF-B', '200', 'Open', '2026-10-10']]  # two mismatches closing soon
+
+
+@pytest.mark.parametrize('second_offers, unchanged', [
+    (_SOON_OFFERS, True),                                         # same report again
+    (list(reversed(_SOON_OFFERS)), True),                         # same rows, Ark listed them in another order
+    ([['OF-A', '100', 'Open', '2026-10-09'], ['OF-B', '250', 'Open', '2026-10-10']], False),  # a price changed
+    (_SOON_OFFERS[:1], False),                                    # a mismatch was fixed
+    (_SOON_OFFERS + [['OF-C', '50', 'Pending', '']], False),     # a new mismatch
+])
+def test_mirror_step_is_no_changes_when_the_export_matches_the_last_one(fake_ark, out_dir, monkeypatch, msgboxes,
+                                                                        second_offers, unchanged):
+    """When the new PHX_Price_Paid_Export.xlsx has exactly the rows of the one it replaces (in any order),
+    Mirror files the step under No changes, still saying what's in it; any difference is Needs review."""
+    _pin_today(monkeypatch)
+    _serve(fake_ark, _SOON_OFFERS, [])
+    assert tpp_lhpp.mirror_step()[0] == ark_common.REVIEW  # first run: nothing to compare with
+    _serve(fake_ark, second_offers, [])
+
+    kind, line = tpp_lhpp.mirror_step()
+
+    if unchanged:
+        assert (kind, line) == (ark_common.NOTHING, 'PHX_Price_Paid_Export.xlsx unchanged since the last run '
+                                                    '(2 price mismatches closing in the next two weeks)')
+    else:
+        assert kind == ark_common.REVIEW and line.endswith(': review PHX_Price_Paid_Export.xlsx')
+    assert len(_export_rows(out_dir)) == 1 + len(second_offers)  # the workbook is rewritten either way
+
+
+def test_unreadable_close_dates_unchanged_are_no_changes_too(fake_ark, out_dir, monkeypatch, msgboxes):
+    """A mismatch with a Close Date Mirror can't read, already in the last export, doesn't make the step
+    needs-review again."""
+    _pin_today(monkeypatch)
+    _serve(fake_ark, [['OF-TBD', '100', 'Open', 'TBD']], [])
+    tpp_lhpp.mirror_step()
+
+    assert tpp_lhpp.mirror_step() == (
+        ark_common.NOTHING, 'PHX_Price_Paid_Export.xlsx unchanged since the last run (No price mismatches closing '
+                            "in the next two weeks, but 1 has a Close Date Mirror couldn't read)")
+
+
+@pytest.mark.parametrize('old_file', [b'not a workbook', None])
+def test_a_missing_or_damaged_last_export_counts_as_changed(fake_ark, out_dir, monkeypatch, msgboxes, old_file):
+    """With no earlier export, or one that can't be read, the step is Needs review and the file is rewritten."""
+    _pin_today(monkeypatch)
+    if old_file is not None:
+        (out_dir / tpp_lhpp._EXPORT_FILENAME).write_bytes(old_file)
+    _serve(fake_ark, _SOON_OFFERS, [])
+
+    assert tpp_lhpp.mirror_step()[0] == ark_common.REVIEW
+    assert len(_export_rows(out_dir)) == 1 + 2
+
+
+def test_the_button_still_writes_and_reports_when_nothing_changed(fake_ark, out_dir, msgboxes):
+    """Run from its button, TPP-LHPP shows its Close Date box as before even if the export didn't change."""
+    _serve(fake_ark, [['OF-A', '100', 'Open', '2026-10-09']], [])
+    tpp_lhpp.main()
+    msgboxes.clear()
+    tpp_lhpp.main()
+    assert msgboxes == [('TPP-LHPP', 'Close Date found on 1 of 1 exported offer:\n\nOF-A  2026-10-09')]
